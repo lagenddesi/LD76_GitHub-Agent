@@ -1,0 +1,13 @@
+{
+  "name": "ld76-github-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "LD76 Code Agent - mobile-first AI coding agent for GitHub repositories.",
+  "type": "module",
+  "scripts": {
+    "start": "vercel dev"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
