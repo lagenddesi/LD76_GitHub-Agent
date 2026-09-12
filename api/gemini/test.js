@@ -6,13 +6,13 @@ export default async function handler(request, response) {
     });
   }
 
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.LD76_GEMINI_API_KEY;
 
   if (!apiKey) {
     return response.status(503).json({
       ok: false,
       error:
-        "Gemini API key is not configured. Add GEMINI_API_KEY to the Vercel environment variables."
+        "Gemini API key is not configured. Add LD76_GEMINI_API_KEY to the Vercel environment variables."
     });
   }
 
