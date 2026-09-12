@@ -1,10 +1,6 @@
 /*
  * LD76 Code Agent
- * Phase 0 — Frontend application shell
- *
- * No real Gemini or GitHub operations are implemented in Phase 0.
- * This file only provides the UI state, navigation, local shell behavior,
- * and backend API foundation hooks required by the Phase 0 interface.
+ * Phase 1 — secure Gemini connection testing
  */
 
 (() => {
@@ -80,7 +76,11 @@
   };
 
   function showScreen(screenName) {
-    const validScreens = ["chat", "github", "settings"];
+    const validScreens = [
+      "chat",
+      "github",
+      "settings"
+    ];
 
     if (!validScreens.includes(screenName)) {
       return;
@@ -102,7 +102,10 @@
       item.classList.toggle("active", isActive);
 
       if (isActive) {
-        item.setAttribute("aria-current", "page");
+        item.setAttribute(
+          "aria-current",
+          "page"
+        );
       } else {
         item.removeAttribute("aria-current");
       }
@@ -116,7 +119,9 @@
       return;
     }
 
-    elements.mainNavigation.classList.remove("mobile-open");
+    elements.mainNavigation.classList.remove(
+      "mobile-open"
+    );
 
     if (elements.menuButton) {
       elements.menuButton.setAttribute(
@@ -127,7 +132,10 @@
   }
 
   function toggleMobileNavigation() {
-    if (!elements.mainNavigation || !elements.menuButton) {
+    if (
+      !elements.mainNavigation ||
+      !elements.menuButton
+    ) {
       return;
     }
 
@@ -148,17 +156,27 @@
     elements.sendButton.disabled = isBusy;
     elements.messageInput.disabled = isBusy;
     elements.newChatButton.disabled = isBusy;
+    elements.geminiTestButton.disabled = isBusy;
+    elements.refreshModelsButton.disabled = isBusy;
 
     if (isBusy) {
-      elements.agentProgress.classList.remove("hidden");
+      elements.agentProgress.classList.remove(
+        "hidden"
+      );
     } else {
-      elements.agentProgress.classList.add("hidden");
+      elements.agentProgress.classList.add(
+        "hidden"
+      );
     }
   }
 
   function setProgress(message) {
-    elements.agentProgressText.textContent = message;
-    elements.agentProgress.classList.remove("hidden");
+    elements.agentProgressText.textContent =
+      message;
+
+    elements.agentProgress.classList.remove(
+      "hidden"
+    );
   }
 
   function showGlobalMessage(message) {
@@ -167,28 +185,50 @@
     }
 
     elements.globalMessage.textContent = message;
-    elements.globalMessage.classList.remove("hidden");
 
-    window.clearTimeout(showGlobalMessage.timeoutId);
+    elements.globalMessage.classList.remove(
+      "hidden"
+    );
 
-    showGlobalMessage.timeoutId = window.setTimeout(() => {
-      elements.globalMessage.classList.add("hidden");
-    }, 3500);
+    window.clearTimeout(
+      showGlobalMessage.timeoutId
+    );
+
+    showGlobalMessage.timeoutId =
+      window.setTimeout(() => {
+        elements.globalMessage.classList.add(
+          "hidden"
+        );
+      }, 5000);
   }
 
-  function createMessageElement(role, content) {
-    const wrapper = document.createElement("div");
+  function createMessageElement(
+    role,
+    content
+  ) {
+    const wrapper =
+      document.createElement("div");
 
     wrapper.className = "chat-message";
     wrapper.dataset.role = role;
 
-    const label = document.createElement("strong");
-    label.className = "chat-message-role";
-    label.textContent =
-      role === "user" ? "You" : "LD76 Agent";
+    const label =
+      document.createElement("strong");
 
-    const body = document.createElement("div");
-    body.className = "chat-message-content";
+    label.className =
+      "chat-message-role";
+
+    label.textContent =
+      role === "user"
+        ? "You"
+        : "LD76 Agent";
+
+    const body =
+      document.createElement("div");
+
+    body.className =
+      "chat-message-content";
+
     body.textContent = content;
 
     wrapper.appendChild(label);
@@ -197,18 +237,28 @@
     return wrapper;
   }
 
-  function appendMessage(role, content) {
+  function appendMessage(
+    role,
+    content
+  ) {
     const emptyState =
-      elements.chatMessages.querySelector(".empty-chat");
+      elements.chatMessages.querySelector(
+        ".empty-chat"
+      );
 
     if (emptyState) {
       emptyState.remove();
     }
 
     const messageElement =
-      createMessageElement(role, content);
+      createMessageElement(
+        role,
+        content
+      );
 
-    elements.chatMessages.appendChild(messageElement);
+    elements.chatMessages.appendChild(
+      messageElement
+    );
 
     elements.chatMessages.scrollTop =
       elements.chatMessages.scrollHeight;
@@ -233,30 +283,36 @@
     `;
 
     elements.messageInput.value = "";
+
     autoResizeTextarea();
 
-    showGlobalMessage("New chat started.");
+    showGlobalMessage(
+      "New chat started."
+    );
   }
 
   function autoResizeTextarea() {
-    const textarea = elements.messageInput;
+    const textarea =
+      elements.messageInput;
 
     textarea.style.height = "auto";
 
     const maxHeight = 160;
+
     const nextHeight = Math.min(
       textarea.scrollHeight,
       maxHeight
     );
 
-    textarea.style.height = `${Math.max(
-      42,
-      nextHeight
-    )}px`;
+    textarea.style.height =
+      `${Math.max(42, nextHeight)}px`;
   }
 
-  function updateRepositoryState(repository) {
-    state.selectedRepository = repository || "";
+  function updateRepositoryState(
+    repository
+  ) {
+    state.selectedRepository =
+      repository || "";
 
     if (state.selectedRepository) {
       elements.currentRepository.textContent =
@@ -274,26 +330,101 @@
   }
 
   function updateBranchState(branch) {
-    state.selectedBranch = branch || "";
+    state.selectedBranch =
+      branch || "";
   }
 
   function updateModelState(model) {
-    state.selectedModel = model || "auto";
+    state.selectedModel =
+      model || "auto";
   }
 
   function updatePermissionState(mode) {
-    state.permissionMode = mode || "always-ask";
+    state.permissionMode =
+      mode || "always-ask";
+  }
+
+  async function testGeminiConnection() {
+    if (state.isBusy) {
+      return;
+    }
+
+    setBusy(true);
+    setProgress(
+      "Testing Gemini connection..."
+    );
+
+    try {
+      const response = await fetch(
+        "/api/gemini/test",
+        {
+          method: "GET",
+          headers: {
+            Accept: "application/json"
+          },
+          cache: "no-store"
+        }
+      );
+
+      let data = null;
+
+      try {
+        data = await response.json();
+      } catch {
+        data = null;
+      }
+
+      if (!response.ok || !data?.ok) {
+        const errorMessage =
+          data?.error ||
+          `Gemini connection test failed with HTTP ${response.status}.`;
+
+        elements.connectionStatus.textContent =
+          "Gemini unavailable";
+
+        showGlobalMessage(
+          errorMessage
+        );
+
+        return;
+      }
+
+      elements.connectionStatus.textContent =
+        "Gemini connected";
+
+      showGlobalMessage(
+        "Gemini API connection is working."
+      );
+    } catch (error) {
+      console.error(
+        "Gemini connection test failed:",
+        error
+      );
+
+      elements.connectionStatus.textContent =
+        "Gemini unavailable";
+
+      showGlobalMessage(
+        "Could not reach the Gemini test endpoint. Check the deployment and network connection."
+      );
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function sendChatMessage(message) {
     /*
-     * Phase 0 deliberately does not call Gemini.
-     * The endpoint is reserved for the real backend implementation
-     * in later phases.
+     * Actual Gemini generation is intentionally not implemented
+     * until the dynamic model system in Phase 2.
+     *
+     * Phase 1 establishes secure server-side Gemini communication
+     * through the connection-test endpoint.
      */
 
     setBusy(true);
-    setProgress("Preparing request...");
+    setProgress(
+      "Preparing Gemini request..."
+    );
 
     await new Promise((resolve) => {
       window.setTimeout(resolve, 300);
@@ -302,7 +433,7 @@
     setBusy(false);
 
     showGlobalMessage(
-      "AI backend is not enabled yet. Phase 0 UI is ready."
+      "Gemini connection is configured for Phase 1. AI generation will be enabled with dynamic model selection in Phase 2."
     );
   }
 
@@ -320,19 +451,28 @@
       return;
     }
 
-    appendMessage("user", message);
+    appendMessage(
+      "user",
+      message
+    );
 
     elements.messageInput.value = "";
+
     autoResizeTextarea();
 
     await sendChatMessage(message);
   }
 
-  function handleRepositoryChange(event) {
-    updateRepositoryState(event.target.value);
+  function handleRepositoryChange(
+    event
+  ) {
+    updateRepositoryState(
+      event.target.value
+    );
 
     if (!event.target.value) {
-      elements.branchSelector.disabled = true;
+      elements.branchSelector.disabled =
+        true;
 
       elements.branchSelector.innerHTML = `
         <option value="">
@@ -341,15 +481,12 @@
       `;
 
       updateBranchState("");
+
       return;
     }
 
-    /*
-     * Phase 0 only prepares the branch selector.
-     * Real branch retrieval arrives with GitHub integration.
-     */
-
-    elements.branchSelector.disabled = false;
+    elements.branchSelector.disabled =
+      false;
 
     elements.branchSelector.innerHTML = `
       <option value="main">main</option>
@@ -359,26 +496,28 @@
   }
 
   function handleBranchChange(event) {
-    updateBranchState(event.target.value);
+    updateBranchState(
+      event.target.value
+    );
   }
 
   function handleModelChange(event) {
-    updateModelState(event.target.value);
+    updateModelState(
+      event.target.value
+    );
   }
 
-  function handlePermissionChange(event) {
-    updatePermissionState(event.target.value);
+  function handlePermissionChange(
+    event
+  ) {
+    updatePermissionState(
+      event.target.value
+    );
   }
 
   function handleGitHubConnect() {
     showGlobalMessage(
       "GitHub authentication will be implemented in Phase 3."
-    );
-  }
-
-  function handleGeminiTest() {
-    showGlobalMessage(
-      "Gemini connection testing will be implemented in Phase 1."
     );
   }
 
@@ -389,9 +528,10 @@
   }
 
   function handleClearLocalData() {
-    const confirmed = window.confirm(
-      "Clear local application data?"
-    );
+    const confirmed =
+      window.confirm(
+        "Clear local application data?"
+      );
 
     if (!confirmed) {
       return;
@@ -437,10 +577,14 @@
     }
 
     const clickedInsideNavigation =
-      elements.mainNavigation.contains(event.target);
+      elements.mainNavigation.contains(
+        event.target
+      );
 
     const clickedMenuButton =
-      elements.menuButton.contains(event.target);
+      elements.menuButton.contains(
+        event.target
+      );
 
     if (
       !clickedInsideNavigation &&
@@ -451,12 +595,14 @@
   }
 
   function initialize() {
-    elements.navigationItems.forEach((item) => {
-      item.addEventListener(
-        "click",
-        handleNavigation
-      );
-    });
+    elements.navigationItems.forEach(
+      (item) => {
+        item.addEventListener(
+          "click",
+          handleNavigation
+        );
+      }
+    );
 
     elements.menuButton.addEventListener(
       "click",
@@ -519,7 +665,7 @@
 
     elements.geminiTestButton.addEventListener(
       "click",
-      handleGeminiTest
+      testGeminiConnection
     );
 
     elements.refreshModelsButton.addEventListener(
@@ -562,6 +708,7 @@
       state.selectedModel;
 
     showScreen("chat");
+
     autoResizeTextarea();
   }
 
