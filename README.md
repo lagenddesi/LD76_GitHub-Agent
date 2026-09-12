@@ -18,5 +18,23 @@ Production environment variables are configured through Vercel Project Settings.
 
 Required environment variable:
 
-```text
 GEMINI_API_KEY
+
+For local development, use .env.local.
+
+## Project Status
+
+Phase 0 — application foundation.
+
+Current Phase 0 foundation includes:
+
+- Mobile-first application shell
+- Chat screen
+- GitHub screen
+- Settings screen
+- Mobile navigation
+- Vercel serverless API foundation
+- Environment variable architecture
+- Basic health endpoint
+
+Later phases will add real Gemini integration, dynamic model discovery, GitHub authentication, repository operations, agent actions, permissions, memory, verification, and production hardening.
