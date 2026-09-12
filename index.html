@@ -245,17 +245,25 @@
             <div>
               <h2>Gemini</h2>
               <p>
-                Gemini configuration will be connected securely
-                through the backend.
+                Gemini is configured securely on the server.
               </p>
             </div>
           </div>
 
           <div class="notice">
-            <strong>API key security</strong>
+            <strong>Server-side API key</strong>
             <span>
-              The Gemini API key will never be exposed to frontend
-              JavaScript.
+              The Gemini API key is read only from the
+              GEMINI_API_KEY environment variable on the server.
+              It is never sent to or stored in frontend JavaScript.
+            </span>
+          </div>
+
+          <div class="notice">
+            <strong>Configure the key</strong>
+            <span>
+              Add or change GEMINI_API_KEY in the Vercel Project
+              Environment Variables, then redeploy if required.
             </span>
           </div>
 
