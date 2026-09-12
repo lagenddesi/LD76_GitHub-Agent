@@ -1,6 +1,6 @@
 /*
  * LD76 Code Agent
- * Phase 1 — secure Gemini configuration and connection testing
+ * Phase 2 — dynamic Gemini model discovery and selection
  */
 
 (() => {
@@ -12,67 +12,94 @@
     selectedRepository: "",
     selectedBranch: "",
     selectedModel: "auto",
-    permissionMode: "always-ask"
+    permissionMode: "always-ask",
+    models: [],
+    modelsLoaded: false
   };
 
   const elements = {
     screens: document.querySelectorAll(".screen"),
     navigationItems: document.querySelectorAll("[data-navigate]"),
 
-    connectionStatus: document.getElementById("connection-status"),
+    connectionStatus:
+      document.getElementById("connection-status"),
 
-    menuButton: document.getElementById("menu-button"),
-    mainNavigation: document.getElementById("main-navigation"),
+    menuButton:
+      document.getElementById("menu-button"),
+    mainNavigation:
+      document.getElementById("main-navigation"),
 
-    newChatButton: document.getElementById("new-chat-button"),
+    newChatButton:
+      document.getElementById("new-chat-button"),
 
-    currentRepository: document.getElementById("current-repository"),
-    modelSelector: document.getElementById("model-selector"),
+    currentRepository:
+      document.getElementById("current-repository"),
+    modelSelector:
+      document.getElementById("model-selector"),
 
-    chatMessages: document.getElementById("chat-messages"),
-    chatForm: document.getElementById("chat-form"),
-    messageInput: document.getElementById("message-input"),
-    sendButton: document.getElementById("send-button"),
+    chatMessages:
+      document.getElementById("chat-messages"),
+    chatForm:
+      document.getElementById("chat-form"),
+    messageInput:
+      document.getElementById("message-input"),
+    sendButton:
+      document.getElementById("send-button"),
 
-    agentProgress: document.getElementById("agent-progress"),
-    agentProgressText: document.getElementById("agent-progress-text"),
+    agentProgress:
+      document.getElementById("agent-progress"),
+    agentProgressText:
+      document.getElementById("agent-progress-text"),
 
-    githubConnectionMessage: document.getElementById(
-      "github-connection-message"
-    ),
-    githubStatusBadge: document.getElementById(
-      "github-status-badge"
-    ),
-    githubConnectButton: document.getElementById(
-      "github-connect-button"
-    ),
+    githubConnectionMessage:
+      document.getElementById(
+        "github-connection-message"
+      ),
+    githubStatusBadge:
+      document.getElementById(
+        "github-status-badge"
+      ),
+    githubConnectButton:
+      document.getElementById(
+        "github-connect-button"
+      ),
 
-    repositorySelector: document.getElementById(
-      "repository-selector"
-    ),
-    branchSelector: document.getElementById(
-      "branch-selector"
-    ),
-    repositoryStatus: document.getElementById(
-      "repository-status"
-    ),
+    repositorySelector:
+      document.getElementById(
+        "repository-selector"
+      ),
+    branchSelector:
+      document.getElementById(
+        "branch-selector"
+      ),
+    repositoryStatus:
+      document.getElementById(
+        "repository-status"
+      ),
 
-    geminiTestButton: document.getElementById(
-      "gemini-test-button"
-    ),
-    refreshModelsButton: document.getElementById(
-      "refresh-models-button"
-    ),
+    geminiTestButton:
+      document.getElementById(
+        "gemini-test-button"
+      ),
+    refreshModelsButton:
+      document.getElementById(
+        "refresh-models-button"
+      ),
 
-    permissionMode: document.getElementById(
-      "permission-mode"
-    ),
+    permissionMode:
+      document.getElementById(
+        "permission-mode"
+      ),
 
-    clearLocalDataButton: document.getElementById(
-      "clear-local-data-button"
-    ),
+    clearLocalDataButton:
+      document.getElementById(
+        "clear-local-data-button"
+      ),
 
-    globalMessage: document.getElementById("global-message")
+    globalMessage:
+      document.getElementById(
+        "global-message"
+      )
   };
 
   function showScreen(screenName) {
@@ -92,24 +119,35 @@
       const isActive =
         screen.dataset.screen === screenName;
 
-      screen.classList.toggle("active", isActive);
+      screen.classList.toggle(
+        "active",
+        isActive
+      );
     });
 
-    elements.navigationItems.forEach((item) => {
-      const isActive =
-        item.dataset.navigate === screenName;
+    elements.navigationItems.forEach(
+      (item) => {
+        const isActive =
+          item.dataset.navigate ===
+          screenName;
 
-      item.classList.toggle("active", isActive);
-
-      if (isActive) {
-        item.setAttribute(
-          "aria-current",
-          "page"
+        item.classList.toggle(
+          "active",
+          isActive
         );
-      } else {
-        item.removeAttribute("aria-current");
+
+        if (isActive) {
+          item.setAttribute(
+            "aria-current",
+            "page"
+          );
+        } else {
+          item.removeAttribute(
+            "aria-current"
+          );
+        }
       }
-    });
+    );
 
     closeMobileNavigation();
   }
@@ -153,11 +191,16 @@
   function setBusy(isBusy) {
     state.isBusy = isBusy;
 
-    elements.sendButton.disabled = isBusy;
-    elements.messageInput.disabled = isBusy;
-    elements.newChatButton.disabled = isBusy;
-    elements.geminiTestButton.disabled = isBusy;
-    elements.refreshModelsButton.disabled = isBusy;
+    elements.sendButton.disabled =
+      isBusy;
+    elements.messageInput.disabled =
+      isBusy;
+    elements.newChatButton.disabled =
+      isBusy;
+    elements.geminiTestButton.disabled =
+      isBusy;
+    elements.refreshModelsButton.disabled =
+      isBusy;
 
     if (isBusy) {
       elements.agentProgress.classList.remove(
@@ -184,7 +227,8 @@
       return;
     }
 
-    elements.globalMessage.textContent = message;
+    elements.globalMessage.textContent =
+      message;
 
     elements.globalMessage.classList.remove(
       "hidden"
@@ -209,8 +253,10 @@
     const wrapper =
       document.createElement("div");
 
-    wrapper.className = "chat-message";
-    wrapper.dataset.role = role;
+    wrapper.className =
+      "chat-message";
+    wrapper.dataset.role =
+      role;
 
     const label =
       document.createElement("strong");
@@ -229,7 +275,8 @@
     body.className =
       "chat-message-content";
 
-    body.textContent = content;
+    body.textContent =
+      content;
 
     wrapper.appendChild(label);
     wrapper.appendChild(body);
@@ -282,7 +329,8 @@
       </div>
     `;
 
-    elements.messageInput.value = "";
+    elements.messageInput.value =
+      "";
 
     autoResizeTextarea();
 
@@ -295,17 +343,22 @@
     const textarea =
       elements.messageInput;
 
-    textarea.style.height = "auto";
+    textarea.style.height =
+      "auto";
 
     const maxHeight = 160;
 
-    const nextHeight = Math.min(
-      textarea.scrollHeight,
-      maxHeight
-    );
+    const nextHeight =
+      Math.min(
+        textarea.scrollHeight,
+        maxHeight
+      );
 
     textarea.style.height =
-      `${Math.max(42, nextHeight)}px`;
+      `${Math.max(
+        42,
+        nextHeight
+      )}px`;
   }
 
   function updateRepositoryState(
@@ -329,17 +382,23 @@
     }
   }
 
-  function updateBranchState(branch) {
+  function updateBranchState(
+    branch
+  ) {
     state.selectedBranch =
       branch || "";
   }
 
-  function updateModelState(model) {
+  function updateModelState(
+    model
+  ) {
     state.selectedModel =
       model || "auto";
   }
 
-  function updatePermissionState(mode) {
+  function updatePermissionState(
+    mode
+  ) {
     state.permissionMode =
       mode || "always-ask";
   }
@@ -366,31 +425,38 @@
 
   async function checkGeminiStatus() {
     try {
-      const response = await fetch(
-        "/api/gemini/status",
-        {
-          method: "GET",
-          headers: {
-            Accept: "application/json"
-          },
-          cache: "no-store"
-        }
-      );
+      const response =
+        await fetch(
+          "/api/gemini/status",
+          {
+            method: "GET",
+            headers: {
+              Accept:
+                "application/json"
+            },
+            cache: "no-store"
+          }
+        );
 
       let data = null;
 
       try {
-        data = await response.json();
+        data =
+          await response.json();
       } catch {
         data = null;
       }
 
-      if (!response.ok || !data?.ok) {
+      if (
+        !response.ok ||
+        !data?.ok
+      ) {
         setGeminiConnectionState(
           false,
           null
         );
-        return;
+
+        return false;
       }
 
       if (!data.configured) {
@@ -398,13 +464,16 @@
           false,
           false
         );
-        return;
+
+        return false;
       }
 
       setGeminiConnectionState(
         false,
         true
       );
+
+      return true;
     } catch (error) {
       console.error(
         "Gemini status check failed:",
@@ -415,6 +484,8 @@
         false,
         null
       );
+
+      return false;
     }
   }
 
@@ -424,38 +495,46 @@
     }
 
     setBusy(true);
+
     setProgress(
       "Testing Gemini connection..."
     );
 
     try {
-      const response = await fetch(
-        "/api/gemini/test",
-        {
-          method: "GET",
-          headers: {
-            Accept: "application/json"
-          },
-          cache: "no-store"
-        }
-      );
+      const response =
+        await fetch(
+          "/api/gemini/test",
+          {
+            method: "GET",
+            headers: {
+              Accept:
+                "application/json"
+            },
+            cache: "no-store"
+          }
+        );
 
       let data = null;
 
       try {
-        data = await response.json();
+        data =
+          await response.json();
       } catch {
         data = null;
       }
 
-      if (!response.ok || !data?.ok) {
+      if (
+        !response.ok ||
+        !data?.ok
+      ) {
         const errorMessage =
           data?.error ||
           `Gemini connection test failed with HTTP ${response.status}.`;
 
         setGeminiConnectionState(
           false,
-          response.status !== 503
+          response.status !==
+            503
         );
 
         showGlobalMessage(
@@ -492,32 +571,295 @@
     }
   }
 
-  async function sendChatMessage(message) {
+  function getModelLabel(model) {
+    if (
+      model &&
+      typeof model.displayName ===
+        "string" &&
+      model.displayName.trim()
+    ) {
+      return model.displayName.trim();
+    }
+
+    if (
+      model &&
+      typeof model.name ===
+        "string"
+    ) {
+      return model.name
+        .replace(/^models\//, "");
+    }
+
+    return "Unknown model";
+  }
+
+  function getModelValue(model) {
+    if (
+      !model ||
+      typeof model.name !==
+        "string"
+    ) {
+      return "";
+    }
+
+    return model.name;
+  }
+
+  function populateModelSelector(
+    models
+  ) {
+    const previousSelection =
+      state.selectedModel;
+
+    elements.modelSelector.innerHTML =
+      "";
+
+    const autoOption =
+      document.createElement(
+        "option"
+      );
+
+    autoOption.value = "auto";
+    autoOption.textContent =
+      "Auto";
+
+    elements.modelSelector.appendChild(
+      autoOption
+    );
+
+    for (const model of models) {
+      const value =
+        getModelValue(model);
+
+      if (!value) {
+        continue;
+      }
+
+      const option =
+        document.createElement(
+          "option"
+        );
+
+      option.value = value;
+      option.textContent =
+        getModelLabel(model);
+
+      option.title =
+        model.description || value;
+
+      elements.modelSelector.appendChild(
+        option
+      );
+    }
+
+    const selectionExists =
+      previousSelection ===
+        "auto" ||
+      models.some(
+        (model) =>
+          getModelValue(model) ===
+          previousSelection
+      );
+
+    if (selectionExists) {
+      elements.modelSelector.value =
+        previousSelection;
+    } else {
+      state.selectedModel =
+        "auto";
+
+      elements.modelSelector.value =
+        "auto";
+    }
+
+    elements.modelSelector.disabled =
+      false;
+  }
+
+  function clearModelSelector() {
+    elements.modelSelector.innerHTML =
+      "";
+
+    const option =
+      document.createElement(
+        "option"
+      );
+
+    option.value = "auto";
+    option.textContent =
+      "Auto";
+
+    elements.modelSelector.appendChild(
+      option
+    );
+
+    elements.modelSelector.value =
+      "auto";
+
+    elements.modelSelector.disabled =
+      true;
+
+    state.selectedModel =
+      "auto";
+    state.models = [];
+    state.modelsLoaded = false;
+  }
+
+  async function fetchGeminiModels(
+    options = {}
+  ) {
+    const {
+      showProgress = true,
+      showResultMessage = true
+    } = options;
+
+    if (state.isBusy) {
+      return false;
+    }
+
+    setBusy(true);
+
+    if (showProgress) {
+      setProgress(
+        "Loading available Gemini models..."
+      );
+    }
+
+    try {
+      const response =
+        await fetch(
+          "/api/gemini/models",
+          {
+            method: "GET",
+            headers: {
+              Accept:
+                "application/json"
+            },
+            cache: "no-store"
+          }
+        );
+
+      let data = null;
+
+      try {
+        data =
+          await response.json();
+      } catch {
+        data = null;
+      }
+
+      if (
+        !response.ok ||
+        !data?.ok
+      ) {
+        const errorMessage =
+          data?.error ||
+          `Gemini model discovery failed with HTTP ${response.status}.`;
+
+        clearModelSelector();
+
+        showGlobalMessage(
+          errorMessage
+        );
+
+        return false;
+      }
+
+      const models =
+        Array.isArray(data.models)
+          ? data.models
+          : [];
+
+      state.models =
+        models;
+
+      state.modelsLoaded =
+        true;
+
+      populateModelSelector(
+        models
+      );
+
+      if (showResultMessage) {
+        if (models.length === 0) {
+          showGlobalMessage(
+            "No Gemini models supporting generateContent are available for this API key."
+          );
+        } else {
+          showGlobalMessage(
+            `${models.length} Gemini model${models.length === 1 ? "" : "s"} available.`
+          );
+        }
+      }
+
+      return true;
+    } catch (error) {
+      console.error(
+        "Gemini model discovery failed:",
+        error
+      );
+
+      clearModelSelector();
+
+      showGlobalMessage(
+        "Could not reach the Gemini models endpoint. Check the deployment and network connection."
+      );
+
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function refreshGeminiModels() {
+    await fetchGeminiModels({
+      showProgress: true,
+      showResultMessage: true
+    });
+  }
+
+  async function sendChatMessage(
+    message
+  ) {
     /*
-     * Actual Gemini generation is intentionally not implemented
-     * until the dynamic model system in Phase 2.
+     * Actual Gemini generation remains separate
+     * from model discovery in this step.
      *
-     * Phase 1 establishes secure server-side Gemini communication
-     * through the connection-test endpoint.
+     * Phase 2 currently establishes:
+     * - real model discovery
+     * - capability filtering
+     * - model selection
+     * - Auto selection state
+     *
+     * Generation endpoint integration will use
+     * the selected model in the next Phase 2 step.
      */
 
     setBusy(true);
+
     setProgress(
       "Preparing Gemini request..."
     );
 
-    await new Promise((resolve) => {
-      window.setTimeout(resolve, 300);
-    });
+    await new Promise(
+      (resolve) => {
+        window.setTimeout(
+          resolve,
+          300
+        );
+      }
+    );
 
     setBusy(false);
 
     showGlobalMessage(
-      "Gemini connection is configured for Phase 1. AI generation will be enabled with dynamic model selection in Phase 2."
+      `Gemini model selection is ready. Selected: ${state.selectedModel === "auto" ? "Auto" : state.selectedModel}.`
     );
   }
 
-  async function handleChatSubmit(event) {
+  async function handleChatSubmit(
+    event
+  ) {
     event.preventDefault();
 
     if (state.isBusy) {
@@ -536,11 +878,14 @@
       message
     );
 
-    elements.messageInput.value = "";
+    elements.messageInput.value =
+      "";
 
     autoResizeTextarea();
 
-    await sendChatMessage(message);
+    await sendChatMessage(
+      message
+    );
   }
 
   function handleRepositoryChange(
@@ -572,19 +917,49 @@
       <option value="main">main</option>
     `;
 
-    updateBranchState("main");
+    updateBranchState(
+      "main"
+    );
   }
 
-  function handleBranchChange(event) {
+  function handleBranchChange(
+    event
+  ) {
     updateBranchState(
       event.target.value
     );
   }
 
-  function handleModelChange(event) {
+  function handleModelChange(
+    event
+  ) {
     updateModelState(
       event.target.value
     );
+
+    const selectedModel =
+      state.models.find(
+        (model) =>
+          model.name ===
+          state.selectedModel
+      );
+
+    if (
+      state.selectedModel !==
+        "auto" &&
+      selectedModel
+    ) {
+      showGlobalMessage(
+        `Model selected: ${getModelLabel(selectedModel)}`
+      );
+    } else if (
+      state.selectedModel ===
+      "auto"
+    ) {
+      showGlobalMessage(
+        "Model selection set to Auto."
+      );
+    }
   }
 
   function handlePermissionChange(
@@ -598,12 +973,6 @@
   function handleGitHubConnect() {
     showGlobalMessage(
       "GitHub authentication will be implemented in Phase 3."
-    );
-  }
-
-  function handleRefreshModels() {
-    showGlobalMessage(
-      "Dynamic model discovery will be implemented in Phase 2."
     );
   }
 
@@ -636,18 +1005,25 @@
     }
   }
 
-  function handleNavigation(event) {
+  function handleNavigation(
+    event
+  ) {
     const screenName =
-      event.currentTarget.dataset.navigate;
+      event.currentTarget.dataset
+        .navigate;
 
-    showScreen(screenName);
+    showScreen(
+      screenName
+    );
   }
 
   function handleMenuClick() {
     toggleMobileNavigation();
   }
 
-  function handleDocumentClick(event) {
+  function handleDocumentClick(
+    event
+  ) {
     if (
       window.innerWidth >= 700 ||
       !elements.mainNavigation ||
@@ -674,7 +1050,7 @@
     }
   }
 
-  function initialize() {
+  async function initialize() {
     elements.navigationItems.forEach(
       (item) => {
         item.addEventListener(
@@ -750,7 +1126,7 @@
 
     elements.refreshModelsButton.addEventListener(
       "click",
-      handleRefreshModels
+      refreshGeminiModels
     );
 
     elements.clearLocalDataButton.addEventListener(
@@ -784,14 +1160,21 @@
     elements.permissionMode.value =
       state.permissionMode;
 
-    elements.modelSelector.value =
-      state.selectedModel;
+    clearModelSelector();
 
     showScreen("chat");
 
     autoResizeTextarea();
 
-    checkGeminiStatus();
+    const geminiConfigured =
+      await checkGeminiStatus();
+
+    if (geminiConfigured) {
+      await fetchGeminiModels({
+        showProgress: false,
+        showResultMessage: false
+      });
+    }
   }
 
   initialize();
