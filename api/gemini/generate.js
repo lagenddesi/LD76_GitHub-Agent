@@ -161,33 +161,9 @@ export default async function handler(request, response) {
     );
   }
 
-  function selectAutoModel(models) {
-    if (!models.length) {
-      return null;
-    }
-
+  function sortAutoModels(models) {
     return [...models].sort(
       (first, second) => {
-        const firstThinking =
-          first.thinking === true
-            ? 1
-            : 0;
-
-        const secondThinking =
-          second.thinking === true
-            ? 1
-            : 0;
-
-        if (
-          secondThinking !==
-          firstThinking
-        ) {
-          return (
-            secondThinking -
-            firstThinking
-          );
-        }
-
         const firstOutput =
           Number.isInteger(
             first.outputTokenLimit
@@ -242,34 +218,14 @@ export default async function handler(request, response) {
           String(second.name)
         );
       }
-    )[0];
+    );
   }
 
-  try {
-    let selectedModel =
-      requestedModel;
-
-    if (requestedModel === "auto") {
-      const models =
-        await fetchAvailableModels();
-
-      const autoModel =
-        selectAutoModel(models);
-
-      if (!autoModel) {
-        return response.status(503).json({
-          ok: false,
-          error:
-            "No Gemini models supporting generateContent are available for this API key."
-        });
-      }
-
-      selectedModel =
-        autoModel.name;
-    }
-
+  async function generateWithModel(
+    modelName
+  ) {
     const modelId =
-      selectedModel.replace(
+      modelName.replace(
         /^models\//,
         ""
       );
@@ -322,13 +278,14 @@ export default async function handler(request, response) {
         upstreamData?.error?.message ||
         "Gemini API returned an unexpected error.";
 
-      return response.status(
-        upstreamResponse.status
-      ).json({
-        ok: false,
-        error:
-          `Gemini API error: ${upstreamMessage}`
-      });
+      const error = new Error(
+        `Gemini API error: ${upstreamMessage}`
+      );
+
+      error.status =
+        upstreamResponse.status;
+
+      throw error;
     }
 
     const candidates =
@@ -364,18 +321,112 @@ export default async function handler(request, response) {
         firstCandidate?.finishReason ||
         "unknown";
 
-      return response.status(502).json({
-        ok: false,
-        error:
-          `Gemini returned no text content. Finish reason: ${finishReason}.`
+      const error = new Error(
+        `Gemini returned no text content. Finish reason: ${finishReason}.`
+      );
+
+      error.status = 502;
+
+      throw error;
+    }
+
+    return {
+      text,
+      model: modelName
+    };
+  }
+
+  try {
+    if (requestedModel !== "auto") {
+      const result =
+        await generateWithModel(
+          requestedModel
+        );
+
+      return response.status(200).json({
+        ok: true,
+        service: "Gemini API",
+        model: result.model,
+        text: result.text
       });
     }
 
-    return response.status(200).json({
-      ok: true,
-      service: "Gemini API",
-      model: selectedModel,
-      text
+    const availableModels =
+      await fetchAvailableModels();
+
+    if (!availableModels.length) {
+      return response.status(503).json({
+        ok: false,
+        error:
+          "No Gemini models supporting generateContent are available for this API key."
+      });
+    }
+
+    const autoModels =
+      sortAutoModels(
+        availableModels
+      );
+
+    const failures = [];
+
+    for (const model of autoModels) {
+      try {
+        const result =
+          await generateWithModel(
+            model.name
+          );
+
+        return response.status(200).json({
+          ok: true,
+          service: "Gemini API",
+          model: result.model,
+          text: result.text
+        });
+      } catch (error) {
+        const modelName =
+          model.name;
+
+        const errorMessage =
+          error?.message ||
+          "Unknown Gemini model error.";
+
+        console.warn(
+          `Auto model failed: ${modelName}`,
+          errorMessage
+        );
+
+        failures.push({
+          model: modelName,
+          error: errorMessage,
+          status:
+            Number.isInteger(
+              error?.status
+            )
+              ? error.status
+              : null
+        });
+      }
+    }
+
+    const availableModelNames =
+      availableModels
+        .map(
+          (model) => model.name
+        )
+        .join(", ");
+
+    const failureSummary =
+      failures
+        .map(
+          (failure) =>
+            `${failure.model}: ${failure.error}`
+        )
+        .join(" | ");
+
+    return response.status(502).json({
+      ok: false,
+      error:
+        `Auto model selection could not complete a successful Gemini request. Available models: ${availableModelNames}. Failures: ${failureSummary}`
     });
   } catch (error) {
     console.error(
