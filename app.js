@@ -1,6 +1,6 @@
 /*
  * LD76 Code Agent
- * Phase 1 — secure Gemini connection testing
+ * Phase 1 — secure Gemini configuration and connection testing
  */
 
 (() => {
@@ -344,6 +344,80 @@
       mode || "always-ask";
   }
 
+  function setGeminiConnectionState(
+    connected,
+    configured
+  ) {
+    if (connected) {
+      elements.connectionStatus.textContent =
+        "Gemini connected";
+      return;
+    }
+
+    if (configured === false) {
+      elements.connectionStatus.textContent =
+        "Gemini not configured";
+      return;
+    }
+
+    elements.connectionStatus.textContent =
+      "Gemini unavailable";
+  }
+
+  async function checkGeminiStatus() {
+    try {
+      const response = await fetch(
+        "/api/gemini/status",
+        {
+          method: "GET",
+          headers: {
+            Accept: "application/json"
+          },
+          cache: "no-store"
+        }
+      );
+
+      let data = null;
+
+      try {
+        data = await response.json();
+      } catch {
+        data = null;
+      }
+
+      if (!response.ok || !data?.ok) {
+        setGeminiConnectionState(
+          false,
+          null
+        );
+        return;
+      }
+
+      if (!data.configured) {
+        setGeminiConnectionState(
+          false,
+          false
+        );
+        return;
+      }
+
+      setGeminiConnectionState(
+        false,
+        true
+      );
+    } catch (error) {
+      console.error(
+        "Gemini status check failed:",
+        error
+      );
+
+      setGeminiConnectionState(
+        false,
+        null
+      );
+    }
+  }
+
   async function testGeminiConnection() {
     if (state.isBusy) {
       return;
@@ -379,8 +453,10 @@
           data?.error ||
           `Gemini connection test failed with HTTP ${response.status}.`;
 
-        elements.connectionStatus.textContent =
-          "Gemini unavailable";
+        setGeminiConnectionState(
+          false,
+          response.status !== 503
+        );
 
         showGlobalMessage(
           errorMessage
@@ -389,8 +465,10 @@
         return;
       }
 
-      elements.connectionStatus.textContent =
-        "Gemini connected";
+      setGeminiConnectionState(
+        true,
+        true
+      );
 
       showGlobalMessage(
         "Gemini API connection is working."
@@ -401,8 +479,10 @@
         error
       );
 
-      elements.connectionStatus.textContent =
-        "Gemini unavailable";
+      setGeminiConnectionState(
+        false,
+        null
+      );
 
       showGlobalMessage(
         "Could not reach the Gemini test endpoint. Check the deployment and network connection."
@@ -693,7 +773,7 @@
     );
 
     elements.connectionStatus.textContent =
-      "Not connected";
+      "Checking Gemini...";
 
     elements.githubConnectionMessage.textContent =
       "GitHub is not connected.";
@@ -710,6 +790,8 @@
     showScreen("chat");
 
     autoResizeTextarea();
+
+    checkGeminiStatus();
   }
 
   initialize();
