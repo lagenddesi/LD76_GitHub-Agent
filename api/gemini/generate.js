@@ -87,7 +87,9 @@ export default async function handler(request, response) {
         );
       }
 
-      const upstreamResponse = await fetch(url);
+      const upstreamResponse =
+        await fetch(url);
+
       const responseText =
         await upstreamResponse.text();
 
@@ -324,7 +326,8 @@ export default async function handler(request, response) {
         upstreamResponse.status
       ).json({
         ok: false,
-        error: `Gemini API error: ${upstreamMessage}`
+        error:
+          `Gemini API error: ${upstreamMessage}`
       });
     }
 
@@ -394,4 +397,4 @@ export default async function handler(request, response) {
         "Could not complete the Gemini request."
     });
   }
-  }
+}
