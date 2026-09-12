@@ -6,7 +6,7 @@ export default function handler(request, response) {
     });
   }
 
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.LD76_GEMINI_API_KEY;
 
   return response.status(200).json({
     ok: true,
