@@ -16,6 +16,9 @@ export const state = {
   selectedRepository: "",
   selectedBranch: "",
 
+  conversationId: null,
+  historyLoaded: false,
+
   busy: false,
 
   agent: {
