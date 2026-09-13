@@ -138,11 +138,31 @@ export function removeProgress() {
   );
 }
 
+/**
+ * Render one chat message.
+ *
+ * Supported roles:
+ * - user
+ * - assistant
+ * - system
+ * - error
+ */
 export function appendMessage(
-  type,
-  message
+  role,
+  message,
+  metadata = null
 ) {
   if (!elements.chatMessages) {
+    return;
+  }
+
+  const cleanRole =
+    normalizeMessageRole(role);
+
+  const cleanMessage =
+    String(message ?? "");
+
+  if (!cleanMessage.trim()) {
     return;
   }
 
@@ -157,7 +177,59 @@ export function appendMessage(
     document.createElement("article");
 
   article.className =
-    `chat-message chat-message-${type}`;
+    `chat-message chat-message-${cleanRole}`;
+
+  article.dataset.role =
+    cleanRole;
+
+  if (
+    metadata &&
+    typeof metadata === "object"
+  ) {
+    if (metadata.type) {
+      article.dataset.messageType =
+        String(metadata.type);
+    }
+
+    if (metadata.operation) {
+      article.dataset.operation =
+        String(metadata.operation);
+    }
+  }
+
+  const header =
+    document.createElement("div");
+
+  header.className =
+    "chat-message-header";
+
+  const sender =
+    document.createElement("span");
+
+  sender.className =
+    "chat-message-sender";
+
+  sender.textContent =
+    getSenderLabel(cleanRole);
+
+  header.appendChild(sender);
+
+  if (
+    metadata?.timestamp
+  ) {
+    const time =
+      document.createElement("time");
+
+    time.className =
+      "chat-message-time";
+
+    time.textContent =
+      formatMessageTime(
+        metadata.timestamp
+      );
+
+    header.appendChild(time);
+  }
 
   const content =
     document.createElement("div");
@@ -166,16 +238,72 @@ export function appendMessage(
     "chat-message-content";
 
   content.textContent =
-    String(message ?? "");
+    cleanMessage;
 
+  article.appendChild(header);
   article.appendChild(content);
 
   elements.chatMessages.appendChild(
     article
   );
 
-  elements.chatMessages.scrollTop =
-    elements.chatMessages.scrollHeight;
+  scrollChatToBottom();
+}
+
+/**
+ * Render messages loaded from IndexedDB.
+ */
+export function renderStoredMessages(
+  messages
+) {
+  if (!elements.chatMessages) {
+    return;
+  }
+
+  clearChatMessages();
+
+  if (
+    !Array.isArray(messages) ||
+    messages.length === 0
+  ) {
+    addWelcomeMessage();
+    return;
+  }
+
+  messages.forEach((message) => {
+    appendMessage(
+      message?.role,
+      message?.content,
+      {
+        ...(message?.metadata || {}),
+        timestamp:
+          message?.createdAt || null
+      }
+    );
+  });
+}
+
+/**
+ * Render a message object returned
+ * from history without requiring the
+ * caller to manually map its fields.
+ */
+export function appendHistoryMessage(
+  message
+) {
+  if (!message) {
+    return;
+  }
+
+  appendMessage(
+    message.role,
+    message.content,
+    {
+      ...(message.metadata || {}),
+      timestamp:
+        message.createdAt || null
+    }
+  );
 }
 
 export function addWelcomeMessage() {
@@ -193,7 +321,7 @@ export function addWelcomeMessage() {
 
   appendMessage(
     "system",
-    "Ready. Connect GitHub, select a repository and branch, then tell the agent what you want to build or change."
+    "Ready. Tum mujhse normal conversation, planning, code review ya GitHub coding task ke bare mein baat kar sakte ho. Main bina clear instruction ke koi file change nahi karunga."
   );
 }
 
@@ -239,10 +367,14 @@ export function setGeminiStatus(
   }
 
   const labels = {
-    configured: "Gemini configured",
-    connected: "Gemini connected",
-    testing: "Testing Gemini...",
-    error: "Gemini error",
+    configured:
+      "Gemini configured",
+    connected:
+      "Gemini connected",
+    testing:
+      "Testing Gemini...",
+    error:
+      "Gemini error",
     "not-configured":
       "Gemini not configured",
     unavailable:
@@ -262,10 +394,14 @@ export function setGitHubStatus(
   }
 
   const labels = {
-    checking: "Checking...",
-    connected: "Connected",
-    disconnected: "Disconnected",
-    error: "Error"
+    checking:
+      "Checking...",
+    connected:
+      "Connected",
+    disconnected:
+      "Disconnected",
+    error:
+      "Error"
   };
 
   elements.githubStatusBadge.textContent =
@@ -354,6 +490,7 @@ export function resetBranchSelector() {
     document.createElement("option");
 
   option.value = "";
+
   option.textContent =
     "Select a repository first";
 
@@ -518,3 +655,69 @@ export function updateAgentPermissionUI() {
 
   hideAgentPermission();
 }
+
+function normalizeMessageRole(
+  role
+) {
+  const value =
+    String(role || "")
+      .trim()
+      .toLowerCase();
+
+  if (
+    value === "user" ||
+    value === "assistant" ||
+    value === "system" ||
+    value === "error"
+  ) {
+    return value;
+  }
+
+  return "system";
+}
+
+function getSenderLabel(role) {
+  const labels = {
+    user: "You",
+    assistant: "Gemini",
+    system: "Agent",
+    error: "Error"
+  };
+
+  return (
+    labels[role] ||
+    "Agent"
+  );
+}
+
+function formatMessageTime(
+  timestamp
+) {
+  const date =
+    new Date(timestamp);
+
+  if (
+    Number.isNaN(
+      date.getTime()
+    )
+  ) {
+    return "";
+  }
+
+  return date.toLocaleTimeString(
+    [],
+    {
+      hour: "2-digit",
+      minute: "2-digit"
+    }
+  );
+}
+
+function scrollChatToBottom() {
+  if (!elements.chatMessages) {
+    return;
+  }
+
+  elements.chatMessages.scrollTop =
+    elements.chatMessages.scrollHeight;
+    }
