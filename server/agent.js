@@ -1673,6 +1673,9 @@ function isUsableGeminiModel(
     return false;
   }
 
+  const lowerName =
+    name.toLowerCase();
+
   const methods =
     Array.isArray(
       model.supportedGenerationMethods
@@ -1680,17 +1683,38 @@ function isUsableGeminiModel(
       ? model.supportedGenerationMethods
       : [];
 
-  return (
-    methods.includes(
+  if (
+    !methods.includes(
       "generateContent"
-    ) &&
-    !name.toLowerCase().includes(
-      "embedding"
-    ) &&
-    !name.toLowerCase().includes(
-      "aqa"
     )
-  );
+  ) {
+    return false;
+  }
+
+  const excludedPatterns = [
+    "embedding",
+    "aqa",
+    "image",
+    "nano-banana",
+    "banana",
+    "veo",
+    "video",
+    "audio",
+    "tts",
+    "transcribe",
+    "speech"
+  ];
+
+  if (
+    excludedPatterns.some(
+      (pattern) =>
+        lowerName.includes(pattern)
+    )
+  ) {
+    return false;
+  }
+
+  return true;
 }
 
 function compareGeminiModels(
