@@ -1,8 +1,6 @@
 import { state } from "./state.js";
 import { elements } from "./dom.js";
 import {
-  setBusy,
-  showAgentPermission,
   hideAgentPermission,
   updateAgentPermissionUI,
   showGlobalMessage
@@ -95,6 +93,12 @@ async function submitChat() {
       "Chat submission failed:",
       error
     );
+
+    showGlobalMessage(
+      error.message ||
+        "Agent request failed.",
+      "error"
+    );
   }
 }
 
@@ -152,8 +156,6 @@ async function handlePermissionAction(
     return;
   }
 
-  setBusy(true);
-
   try {
     if (mode === "deny") {
       await requestPermission(
@@ -181,8 +183,6 @@ async function handlePermissionAction(
     );
 
     updateAgentPermissionUI();
-  } finally {
-    setBusy(false);
   }
 }
 
