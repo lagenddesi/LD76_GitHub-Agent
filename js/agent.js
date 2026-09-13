@@ -1,4 +1,5 @@
 import { state } from "./state.js";
+
 import {
   appendMessage,
   setBusy,
@@ -8,24 +9,16 @@ import {
   showGlobalMessage
 } from "./ui.js";
 
+import {
+  saveMessage,
+  getRecentMessages,
+  messagesToGeminiHistory
+} from "./history.js";
+
+
 export async function runAgent(message) {
   if (state.busy) {
     return;
-  }
-
-  if (!state.githubConnected) {
-    throw new Error(
-      "GitHub connect karo pehle."
-    );
-  }
-
-  if (
-    !state.selectedRepository ||
-    !state.selectedBranch
-  ) {
-    throw new Error(
-      "Repository aur branch select karo pehle."
-    );
   }
 
   const cleanMessage =
@@ -37,6 +30,11 @@ export async function runAgent(message) {
 
   resetAgent();
 
+  await saveChatMessage(
+    "user",
+    cleanMessage
+  );
+
   appendMessage(
     "user",
     cleanMessage
@@ -46,90 +44,343 @@ export async function runAgent(message) {
 
   try {
     appendProgress(
-      "Repository inspect kar raha hoon..."
+      "Request samajh raha hoon..."
     );
 
-    const plan =
-      await createPlan(cleanMessage);
+    const history =
+      await getChatHistory();
 
-    state.agent.plan = plan;
-    state.agent.phase = "planned";
+    const chatResult =
+      await routeChat(
+        cleanMessage,
+        history
+      );
 
-    appendMessage(
-      "assistant",
-      formatPlan(plan)
-    );
+    const intent =
+      normalizeIntent(
+        chatResult?.intent
+      );
 
+    /*
+     * Normal conversation / discussion.
+     * GitHub ki zaroorat nahi.
+     */
     if (
-      !plan.requiresWrite ||
-      !Array.isArray(plan.changes) ||
-      plan.changes.length === 0
+      intent === "conversation" ||
+      intent === "discussion" ||
+      intent === "planning" ||
+      intent === "general" ||
+      !intent
     ) {
+      const answer =
+        getChatResponse(
+          chatResult
+        );
+
+      state.agent.phase =
+        "completed";
+
+      appendMessage(
+        "assistant",
+        answer
+      );
+
+      await saveChatMessage(
+        "assistant",
+        answer,
+        {
+          intent:
+            intent || "conversation"
+        }
+      );
+
+      removeProgress();
+
+      return {
+        intent:
+          intent || "conversation",
+        response: answer
+      };
+    }
+
+    /*
+     * Repository review / inspection.
+     * Ismein write operation nahi hoti.
+     */
+    if (
+      intent === "review" ||
+      intent === "inspection" ||
+      intent === "analyze"
+    ) {
+      if (!state.githubConnected) {
+        const answer =
+          getChatResponse(
+            chatResult
+          ) ||
+          "Code review ke liye pehle GitHub connect aur repository select karni hogi.";
+
+        state.agent.phase =
+          "completed";
+
+        appendMessage(
+          "assistant",
+          answer
+        );
+
+        await saveChatMessage(
+          "assistant",
+          answer,
+          {
+            intent
+          }
+        );
+
+        removeProgress();
+
+        return {
+          intent,
+          response: answer
+        };
+      }
+
+      validateRepositorySelection();
+
+      updateProgress(
+        "Repository inspect kar raha hoon..."
+      );
+
+      const plan =
+        await createPlan(
+          cleanMessage,
+          history
+        );
+
+      state.agent.plan =
+        plan;
+
+      state.agent.phase =
+        "planned";
+
+      const reviewAnswer =
+        formatPlan(plan);
+
+      appendMessage(
+        "assistant",
+        reviewAnswer
+      );
+
+      await saveChatMessage(
+        "assistant",
+        reviewAnswer,
+        {
+          intent,
+          operation:
+            "inspect"
+        }
+      );
+
       state.agent.phase =
         "completed";
 
       updateProgress(
-        "No GitHub changes required."
+        "Review complete. Koi GitHub write nahi hui."
       );
 
       showGlobalMessage(
-        "Request ke liye koi file change required nahi.",
+        "Code review complete. Koi file change nahi ki gayi.",
         "success"
       );
 
-      return plan;
+      return {
+        intent,
+        plan
+      };
     }
 
-    updateProgress(
-      "Required files aur exact changes generate kar raha hoon..."
-    );
+    /*
+     * Actual coding / execution.
+     * Sirf explicit execution intent par.
+     */
+    if (
+      intent === "coding" ||
+      intent === "execution" ||
+      intent === "execute" ||
+      intent === "implementation" ||
+      intent === "fix"
+    ) {
+      validateRepositorySelection();
 
-    const changes =
-      await createChanges(
-        cleanMessage,
-        plan
+      updateProgress(
+        "Repository inspect kar raha hoon..."
       );
 
-    state.agent.changes =
-      changes.changes;
+      const plan =
+        await createPlan(
+          cleanMessage,
+          history
+        );
+
+      state.agent.plan =
+        plan;
+
+      state.agent.phase =
+        "planned";
+
+      const planText =
+        formatPlan(plan);
+
+      appendMessage(
+        "assistant",
+        planText
+      );
+
+      await saveChatMessage(
+        "assistant",
+        planText,
+        {
+          intent,
+          operation:
+            "plan"
+        }
+      );
+
+      if (
+        !plan.requiresWrite ||
+        !Array.isArray(plan.changes) ||
+        plan.changes.length === 0
+      ) {
+        state.agent.phase =
+          "completed";
+
+        updateProgress(
+          "No GitHub changes required."
+        );
+
+        showGlobalMessage(
+          "Request ke liye koi file change required nahi.",
+          "success"
+        );
+
+        return {
+          intent,
+          plan
+        };
+      }
+
+      updateProgress(
+        "Required files aur exact changes generate kar raha hoon..."
+      );
+
+      const changes =
+        await createChanges(
+          cleanMessage,
+          plan,
+          history
+        );
+
+      state.agent.changes =
+        changes.changes;
+
+      state.agent.phase =
+        "changes-ready";
+
+      const changesText =
+        formatChanges(changes);
+
+      appendMessage(
+        "assistant",
+        changesText
+      );
+
+      await saveChatMessage(
+        "assistant",
+        changesText,
+        {
+          intent,
+          operation:
+            "changes"
+        }
+      );
+
+      state.agent.permission =
+        buildPermissionRequest(
+          changes.changes
+        );
+
+      state.agent.phase =
+        "permission-required";
+
+      const permissionText =
+        formatPermissionRequest(
+          state.agent.permission
+        );
+
+      appendMessage(
+        "system",
+        permissionText
+      );
+
+      await saveChatMessage(
+        "system",
+        permissionText,
+        {
+          intent,
+          operation:
+            "permission"
+        }
+      );
+
+      updateProgress(
+        "Changes ready. Write se pehle permission required hai."
+      );
+
+      showGlobalMessage(
+        "Changes ready hain. GitHub write se pehle permission required hai.",
+        "info"
+      );
+
+      return {
+        intent,
+        plan,
+        changes,
+        permission:
+          state.agent.permission
+      };
+    }
+
+    /*
+     * Unknown intent ko safe side par normal
+     * conversation treat karo.
+     */
+    const answer =
+      getChatResponse(
+        chatResult
+      ) ||
+      "Main is request ko discussion ke taur par handle kar raha hoon. Agar aap actual code change chahte hain to clearly bata dein ke kaam implement/fix karna hai.";
 
     state.agent.phase =
-      "changes-ready";
+      "completed";
 
     appendMessage(
       "assistant",
-      formatChanges(changes)
+      answer
     );
 
-    state.agent.permission =
-      buildPermissionRequest(
-        changes.changes
-      );
-
-    state.agent.phase =
-      "permission-required";
-
-    appendMessage(
-      "system",
-      formatPermissionRequest(
-        state.agent.permission
-      )
+    await saveChatMessage(
+      "assistant",
+      answer,
+      {
+        intent:
+          "conversation"
+      }
     );
 
-    updateProgress(
-      "Changes ready. Write se pehle permission required hai."
-    );
-
-    showGlobalMessage(
-      "Changes ready hain. GitHub write se pehle permission required hai.",
-      "info"
-    );
+    removeProgress();
 
     return {
-      plan,
-      changes,
-      permission:
-        state.agent.permission
+      intent:
+        "conversation",
+      response: answer
     };
   } catch (error) {
     state.agent.phase =
@@ -146,6 +397,11 @@ export async function runAgent(message) {
       getReadableError(error);
 
     appendMessage(
+      "error",
+      readableError
+    );
+
+    await saveChatMessage(
       "error",
       readableError
     );
@@ -170,8 +426,142 @@ export async function runAgent(message) {
   }
 }
 
+
+async function routeChat(
+  message,
+  history
+) {
+  const response =
+    await fetch(
+      "/api/agent/chat",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type":
+            "application/json",
+          Accept:
+            "application/json"
+        },
+        body: JSON.stringify({
+          message,
+          history,
+          model:
+            state.selectedModel,
+          repository:
+            state.selectedRepository || "",
+          branch:
+            state.selectedBranch || ""
+        })
+      }
+    );
+
+  const data =
+    await readJson(response);
+
+  if (
+    !response.ok ||
+    !data?.ok
+  ) {
+    throw new Error(
+      getReadableError(
+        data?.error
+      ) ||
+        "Chat request failed."
+    );
+  }
+
+  return data;
+}
+
+
+async function getChatHistory() {
+  if (!state.conversationId) {
+    return [];
+  }
+
+  const messages =
+    await getRecentMessages(
+      state.conversationId,
+      30
+    );
+
+  return messagesToGeminiHistory(
+    messages
+  );
+}
+
+
+async function saveChatMessage(
+  role,
+  content,
+  metadata = null
+) {
+  if (!state.conversationId) {
+    return null;
+  }
+
+  try {
+    return await saveMessage({
+      conversationId:
+        state.conversationId,
+      role,
+      content,
+      metadata
+    });
+  } catch (error) {
+    console.error(
+      "Failed to save chat message:",
+      error
+    );
+
+    return null;
+  }
+}
+
+
+function normalizeIntent(
+  value
+) {
+  const intent =
+    String(value || "")
+      .trim()
+      .toLowerCase();
+
+  if (!intent) {
+    return "";
+  }
+
+  return intent
+    .replace(/[\s-]+/g, "_");
+}
+
+
+function getChatResponse(
+  result
+) {
+  const candidates = [
+    result?.response,
+    result?.answer,
+    result?.message,
+    result?.text
+  ];
+
+  for (const value of candidates) {
+    if (
+      typeof value === "string" &&
+      value.trim()
+    ) {
+      return value.trim();
+    }
+  }
+
+  return "";
+}
+
+
 export async function createPlan(
-  message
+  message,
+  history = []
 ) {
   const response =
     await fetch(
@@ -192,6 +582,7 @@ export async function createPlan(
           branch:
             state.selectedBranch,
           message,
+          history,
           model:
             state.selectedModel
         })
@@ -228,9 +619,11 @@ export async function createPlan(
   );
 }
 
+
 export async function createChanges(
   message,
-  plan
+  plan,
+  history = []
 ) {
   const response =
     await fetch(
@@ -251,6 +644,7 @@ export async function createChanges(
           branch:
             state.selectedBranch,
           message,
+          history,
           plan,
           model:
             state.selectedModel
@@ -296,6 +690,7 @@ export async function createChanges(
       )
   };
 }
+
 
 export async function requestPermission(
   mode
@@ -385,9 +780,21 @@ export async function requestPermission(
 
     removeProgress();
 
+    const text =
+      "GitHub changes denied. Koi file write nahi ki gayi.";
+
     appendMessage(
       "system",
-      "GitHub changes denied. Koi file write nahi ki gayi."
+      text
+    );
+
+    await saveChatMessage(
+      "system",
+      text,
+      {
+        operation:
+          "permission-denied"
+      }
     );
 
     return data;
@@ -405,16 +812,29 @@ export async function requestPermission(
     "Permission granted. Apply step start kar raha hoon..."
   );
 
-  appendMessage(
-    "system",
+  const text =
     permissionGrantedMessage(
       mode,
       data
-    )
+    );
+
+  appendMessage(
+    "system",
+    text
+  );
+
+  await saveChatMessage(
+    "system",
+    text,
+    {
+      operation:
+        "permission-granted"
+    }
   );
 
   return data;
 }
+
 
 export async function applyChanges(
   mode = "allow_once"
@@ -557,12 +977,26 @@ export async function applyChanges(
 
     removeProgress();
 
-    appendMessage(
-      "assistant",
+    const resultText =
       formatApplyResult(
         data,
         verification
-      )
+      );
+
+    appendMessage(
+      "assistant",
+      resultText
+    );
+
+    await saveChatMessage(
+      "assistant",
+      resultText,
+      {
+        operation:
+          "apply",
+        commit:
+          data.commit
+      }
     );
 
     showGlobalMessage(
@@ -598,6 +1032,15 @@ export async function applyChanges(
       readableError
     );
 
+    await saveChatMessage(
+      "error",
+      readableError,
+      {
+        operation:
+          "apply"
+      }
+    );
+
     showGlobalMessage(
       readableError,
       "error"
@@ -610,6 +1053,7 @@ export async function applyChanges(
     setBusy(false);
   }
 }
+
 
 export async function verifyChanges(
   commitSha,
@@ -688,6 +1132,7 @@ export async function verifyChanges(
   };
 }
 
+
 export function resetAgent() {
   state.agent = {
     phase: "idle",
@@ -698,6 +1143,7 @@ export function resetAgent() {
     applied: false
   };
 }
+
 
 export function getPendingChanges() {
   if (
@@ -715,6 +1161,7 @@ export function getPendingChanges() {
     ? state.agent.changes
     : [];
 }
+
 
 function buildPermissionRequest(
   changes
@@ -742,6 +1189,7 @@ function buildPermissionRequest(
       )
   };
 }
+
 
 function formatPlan(plan) {
   const normalized =
@@ -804,10 +1252,9 @@ function formatPlan(plan) {
     );
   }
 
-  return lines.join(
-    "\n"
-  );
+  return lines.join("\n");
 }
+
 
 function formatChanges(
   result
@@ -866,6 +1313,7 @@ function formatChanges(
     .join("\n");
 }
 
+
 function formatPermissionRequest(
   permission
 ) {
@@ -902,10 +1350,9 @@ function formatPermissionRequest(
     "DENY — koi GitHub write nahi"
   );
 
-  return lines.join(
-    "\n"
-  );
+  return lines.join("\n");
 }
+
 
 function permissionGrantedMessage(
   mode,
@@ -925,6 +1372,7 @@ function permissionGrantedMessage(
 
   return `${label} granted.${expires} Actual GitHub write ab apply step mein hoga.`;
 }
+
 
 function formatApplyResult(
   apply,
@@ -964,10 +1412,9 @@ function formatApplyResult(
     "Post-apply verification: PASSED"
   );
 
-  return lines.join(
-    "\n"
-  );
+  return lines.join("\n");
 }
+
 
 function buildCommitMessage() {
   const summary =
@@ -987,6 +1434,7 @@ function buildCommitMessage() {
   return "LD76 Code Agent changes";
 }
 
+
 function isValidSha(value) {
   return (
     typeof value === "string" &&
@@ -995,6 +1443,25 @@ function isValidSha(value) {
     )
   );
 }
+
+
+function validateRepositorySelection() {
+  if (!state.githubConnected) {
+    throw new Error(
+      "GitHub connect karo pehle."
+    );
+  }
+
+  if (
+    !state.selectedRepository ||
+    !state.selectedBranch
+  ) {
+    throw new Error(
+      "Repository aur branch select karo pehle."
+    );
+  }
+}
+
 
 function getOwner() {
   const repository =
@@ -1016,6 +1483,7 @@ function getOwner() {
     separator
   );
 }
+
 
 function getRepo() {
   const repository =
@@ -1039,6 +1507,7 @@ function getRepo() {
   );
 }
 
+
 function normalizePlan(
   value
 ) {
@@ -1059,6 +1528,10 @@ function normalizePlan(
       safeString(
         plan.analysis
       ),
+    requiresWrite:
+      Boolean(
+        plan.requiresWrite
+      ),
     changes:
       normalizeChanges(
         plan.changes
@@ -1074,6 +1547,7 @@ function normalizePlan(
       "unknown"
   };
 }
+
 
 function normalizeChanges(
   changes
@@ -1114,6 +1588,7 @@ function normalizeChanges(
     );
 }
 
+
 function normalizeStringArray(
   value
 ) {
@@ -1128,6 +1603,7 @@ function normalizeStringArray(
       safeString(item)
   );
 }
+
 
 function safeString(
   value
@@ -1159,6 +1635,7 @@ function safeString(
     value
   );
 }
+
 
 function getReadableError(
   error
@@ -1220,6 +1697,7 @@ function getReadableError(
   return "Agent request failed.";
 }
 
+
 async function readJson(
   response
 ) {
@@ -1254,4 +1732,4 @@ async function readJson(
   }
 
   return data;
-}
+    }
