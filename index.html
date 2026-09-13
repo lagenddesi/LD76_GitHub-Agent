@@ -1,5 +1,4 @@
-<!DOCTYPE html>
-<html lang="en">
+<!DOCTYPE html><html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta
@@ -10,381 +9,456 @@
     name="description"
     content="LD76 Code Agent - Mobile-first AI coding agent for GitHub repositories."
   >
-  <meta name="theme-color" content="#0b0f19">
+  <meta name="theme-color" content="#0b0f19">  <title>LD76 Code Agent</title>  <link rel="stylesheet" href="/style.css">
+</head><body>
+  <div id="app"><header class="topbar">
+  <div class="brand">
+    <div class="brand-mark">LD</div>
 
-  <title>LD76 Code Agent</title>
+    <div class="brand-text">
+      <strong>LD76 Code Agent</strong>
+      <span id="connection-status">Not connected</span>
+    </div>
+  </div>
 
-  <link rel="stylesheet" href="/style.css">
-</head>
+  <button
+    id="menu-button"
+    class="icon-button"
+    type="button"
+    aria-label="Open navigation"
+    aria-expanded="false"
+  >
+    ☰
+  </button>
+</header>
 
-<body>
-  <div id="app">
+<main class="app-main">
 
-    <header class="topbar">
-      <div class="brand">
-        <div class="brand-mark">LD</div>
+  <!-- CHAT SCREEN -->
+  <section
+    id="screen-chat"
+    class="screen active"
+    data-screen="chat"
+    aria-labelledby="chat-title"
+  >
+    <div class="screen-header">
+      <div>
+        <p class="eyebrow">AI CODING AGENT</p>
+        <h1 id="chat-title">Chat</h1>
+      </div>
 
-        <div class="brand-text">
-          <strong>LD76 Code Agent</strong>
-          <span id="connection-status">Not connected</span>
+      <button
+        id="new-chat-button"
+        class="secondary-button"
+        type="button"
+      >
+        + New
+      </button>
+    </div>
+
+    <div class="chat-context">
+      <div class="context-item">
+        <span class="context-label">Repository</span>
+        <strong id="current-repository">
+          No repository selected
+        </strong>
+      </div>
+
+      <div class="context-item">
+        <span class="context-label">Model</span>
+
+        <select
+          id="model-selector"
+          aria-label="AI model"
+          disabled
+        >
+          <option value="auto">Auto</option>
+        </select>
+      </div>
+    </div>
+
+    <div
+      id="chat-messages"
+      class="chat-messages"
+      aria-live="polite"
+    >
+      <div class="empty-chat">
+        <div class="empty-chat-icon">⌘</div>
+
+        <h2>Ready to code</h2>
+
+        <p>
+          Connect a GitHub repository and start a conversation
+          with your coding agent.
+        </p>
+      </div>
+    </div>
+
+    <!-- AGENT PERMISSION -->
+    <div
+      id="agent-permission"
+      class="agent-permission hidden"
+      aria-live="polite"
+      hidden
+    >
+      <div class="agent-permission-header">
+        <div>
+          <p class="eyebrow">GITHUB WRITE ACCESS</p>
+          <h3>Permission Required</h3>
+        </div>
+      </div>
+
+      <p id="agent-permission-message">
+        The agent has prepared changes that require your approval.
+      </p>
+
+      <div
+        id="agent-permission-changes"
+        class="agent-permission-changes"
+      ></div>
+
+      <div class="agent-permission-actions">
+        <button
+          id="agent-allow-once-button"
+          class="primary-button"
+          type="button"
+        >
+          Allow Once
+        </button>
+
+        <button
+          id="agent-allow-task-button"
+          class="secondary-button"
+          type="button"
+        >
+          Allow For Task
+        </button>
+
+        <button
+          id="agent-deny-button"
+          class="danger-button"
+          type="button"
+        >
+          Deny
+        </button>
+      </div>
+    </div>
+
+    <div
+      id="agent-progress"
+      class="agent-progress hidden"
+      aria-live="polite"
+    >
+      <span
+        class="progress-spinner"
+        aria-hidden="true"
+      ></span>
+
+      <span id="agent-progress-text">
+        Working...
+      </span>
+    </div>
+
+    <form
+      id="chat-form"
+      class="chat-composer"
+    >
+      <label
+        class="sr-only"
+        for="message-input"
+      >
+        Message the coding agent
+      </label>
+
+      <textarea
+        id="message-input"
+        name="message"
+        rows="1"
+        maxlength="20000"
+        placeholder="Ask the coding agent..."
+        autocomplete="off"
+        spellcheck="true"
+        required
+      ></textarea>
+
+      <button
+        id="send-button"
+        class="send-button"
+        type="submit"
+        aria-label="Send message"
+      >
+        ↑
+      </button>
+    </form>
+  </section>
+
+  <!-- GITHUB SCREEN -->
+  <section
+    id="screen-github"
+    class="screen"
+    data-screen="github"
+    aria-labelledby="github-title"
+  >
+    <div class="screen-header">
+      <div>
+        <p class="eyebrow">REPOSITORY ACCESS</p>
+        <h1 id="github-title">GitHub</h1>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div>
+          <h2>Connection</h2>
+
+          <p id="github-connection-message">
+            GitHub is not connected.
+          </p>
+        </div>
+
+        <span
+          id="github-status-badge"
+          class="status-badge"
+        >
+          Disconnected
+        </span>
+      </div>
+
+      <button
+        id="github-connect-button"
+        class="primary-button"
+        type="button"
+      >
+        Connect GitHub
+      </button>
+
+      <button
+        id="github-disconnect-button"
+        class="danger-button full-width"
+        type="button"
+        hidden
+      >
+        Disconnect GitHub
+      </button>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div>
+          <h2>Repository</h2>
+
+          <p>
+            Select the repository the agent should work on.
+          </p>
+        </div>
+      </div>
+
+      <label
+        for="repository-selector"
+        class="field-label"
+      >
+        Repository
+      </label>
+
+      <select
+        id="repository-selector"
+        class="field-control"
+        disabled
+      >
+        <option value="">
+          Connect GitHub first
+        </option>
+      </select>
+
+      <label
+        for="branch-selector"
+        class="field-label"
+      >
+        Branch
+      </label>
+
+      <select
+        id="branch-selector"
+        class="field-control"
+        disabled
+      >
+        <option value="">
+          Select a repository first
+        </option>
+      </select>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div>
+          <h2>Repository status</h2>
+
+          <p id="repository-status">
+            No repository selected.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- SETTINGS SCREEN -->
+  <section
+    id="screen-settings"
+    class="screen"
+    data-screen="settings"
+    aria-labelledby="settings-title"
+  >
+    <div class="screen-header">
+      <div>
+        <p class="eyebrow">CONFIGURATION</p>
+        <h1 id="settings-title">Settings</h1>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div>
+          <h2>Gemini</h2>
+
+          <p>
+            Gemini is configured securely on the server.
+          </p>
+        </div>
+      </div>
+
+      <div class="notice">
+        <strong>Server-side API key</strong>
+
+        <span>
+          The Gemini API key is read only from the
+          LD76_GEMINI_API_KEY environment variable on the server.
+          It is never sent to or stored in frontend JavaScript.
+        </span>
+      </div>
+
+      <div class="notice">
+        <strong>Configure the key</strong>
+
+        <span>
+          Add or change LD76_GEMINI_API_KEY in the Vercel Project
+          Environment Variables, then redeploy if required.
+        </span>
+      </div>
+
+      <button
+        id="gemini-test-button"
+        class="secondary-button full-width"
+        type="button"
+      >
+        Test Gemini Connection
+      </button>
+
+      <button
+        id="refresh-models-button"
+        class="secondary-button full-width"
+        type="button"
+      >
+        Refresh Available Models
+      </button>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div>
+          <h2>Agent permissions</h2>
+
+          <p>
+            Sensitive operations require confirmation by default.
+          </p>
+        </div>
+      </div>
+
+      <label
+        for="permission-mode"
+        class="field-label"
+      >
+        Permission mode
+      </label>
+
+      <select
+        id="permission-mode"
+        class="field-control"
+      >
+        <option value="always-ask">
+          Always Ask
+        </option>
+      </select>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div>
+          <h2>Local data</h2>
+
+          <p>
+            Conversation history and local application state
+            will be stored on this device.
+          </p>
         </div>
       </div>
 
       <button
-        id="menu-button"
-        class="icon-button"
+        id="clear-local-data-button"
+        class="danger-button full-width"
         type="button"
-        aria-label="Open navigation"
-        aria-expanded="false"
       >
-        ☰
+        Clear Local Data
       </button>
-    </header>
+    </div>
+  </section>
 
-    <main class="app-main">
+</main>
 
-      <!-- CHAT SCREEN -->
-      <section
-        id="screen-chat"
-        class="screen active"
-        data-screen="chat"
-        aria-labelledby="chat-title"
-      >
-        <div class="screen-header">
-          <div>
-            <p class="eyebrow">AI CODING AGENT</p>
-            <h1 id="chat-title">Chat</h1>
-          </div>
+<!-- MOBILE NAVIGATION -->
+<nav
+  id="main-navigation"
+  class="bottom-navigation"
+  aria-label="Main navigation"
+>
+  <button
+    class="nav-item active"
+    type="button"
+    data-navigate="chat"
+    aria-current="page"
+  >
+    <span class="nav-icon">⌘</span>
+    <span>Chat</span>
+  </button>
 
-          <button
-            id="new-chat-button"
-            class="secondary-button"
-            type="button"
-          >
-            + New
-          </button>
-        </div>
+  <button
+    class="nav-item"
+    type="button"
+    data-navigate="github"
+  >
+    <span class="nav-icon">⑂</span>
+    <span>GitHub</span>
+  </button>
 
-        <div class="chat-context">
-          <div class="context-item">
-            <span class="context-label">Repository</span>
-            <strong id="current-repository">No repository selected</strong>
-          </div>
+  <button
+    class="nav-item"
+    type="button"
+    data-navigate="settings"
+  >
+    <span class="nav-icon">⚙</span>
+    <span>Settings</span>
+  </button>
+</nav>
 
-          <div class="context-item">
-            <span class="context-label">Model</span>
+<!-- GLOBAL MESSAGE -->
+<div
+  id="global-message"
+  class="global-message hidden"
+  role="status"
+  aria-live="polite"
+></div>
 
-            <select
-              id="model-selector"
-              aria-label="AI model"
-              disabled
-            >
-              <option value="auto">Auto</option>
-            </select>
-          </div>
-        </div>
-
-        <div
-          id="chat-messages"
-          class="chat-messages"
-          aria-live="polite"
-        >
-          <div class="empty-chat">
-            <div class="empty-chat-icon">⌘</div>
-
-            <h2>Ready to code</h2>
-
-            <p>
-              Connect a GitHub repository and start a conversation
-              with your coding agent.
-            </p>
-          </div>
-        </div>
-
-        <div
-          id="agent-progress"
-          class="agent-progress hidden"
-          aria-live="polite"
-        >
-          <span class="progress-spinner" aria-hidden="true"></span>
-          <span id="agent-progress-text">Working...</span>
-        </div>
-
-        <form id="chat-form" class="chat-composer">
-          <label class="sr-only" for="message-input">
-            Message the coding agent
-          </label>
-
-          <textarea
-            id="message-input"
-            name="message"
-            rows="1"
-            maxlength="20000"
-            placeholder="Ask the coding agent..."
-            autocomplete="off"
-            spellcheck="true"
-            required
-          ></textarea>
-
-          <button
-            id="send-button"
-            class="send-button"
-            type="submit"
-            aria-label="Send message"
-          >
-            ↑
-          </button>
-        </form>
-      </section>
-
-      <!-- GITHUB SCREEN -->
-      <section
-        id="screen-github"
-        class="screen"
-        data-screen="github"
-        aria-labelledby="github-title"
-      >
-        <div class="screen-header">
-          <div>
-            <p class="eyebrow">REPOSITORY ACCESS</p>
-            <h1 id="github-title">GitHub</h1>
-          </div>
-        </div>
-
-        <div class="panel">
-          <div class="panel-header">
-            <div>
-              <h2>Connection</h2>
-              <p id="github-connection-message">
-                GitHub is not connected.
-              </p>
-            </div>
-
-            <span
-              id="github-status-badge"
-              class="status-badge"
-            >
-              Disconnected
-            </span>
-          </div>
-
-          <button
-            id="github-connect-button"
-            class="primary-button"
-            type="button"
-          >
-            Connect GitHub
-          </button>
-
-          <button
-            id="github-disconnect-button"
-            class="danger-button full-width"
-            type="button"
-            hidden
-          >
-            Disconnect GitHub
-          </button>
-        </div>
-
-        <div class="panel">
-          <div class="panel-header">
-            <div>
-              <h2>Repository</h2>
-              <p>Select the repository the agent should work on.</p>
-            </div>
-          </div>
-
-          <label for="repository-selector" class="field-label">
-            Repository
-          </label>
-
-          <select
-            id="repository-selector"
-            class="field-control"
-            disabled
-          >
-            <option value="">
-              Connect GitHub first
-            </option>
-          </select>
-
-          <label for="branch-selector" class="field-label">
-            Branch
-          </label>
-
-          <select
-            id="branch-selector"
-            class="field-control"
-            disabled
-          >
-            <option value="">
-              Select a repository first
-            </option>
-          </select>
-        </div>
-
-        <div class="panel">
-          <div class="panel-header">
-            <div>
-              <h2>Repository status</h2>
-              <p id="repository-status">
-                No repository selected.
-              </p>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <!-- SETTINGS SCREEN -->
-      <section
-        id="screen-settings"
-        class="screen"
-        data-screen="settings"
-        aria-labelledby="settings-title"
-      >
-        <div class="screen-header">
-          <div>
-            <p class="eyebrow">CONFIGURATION</p>
-            <h1 id="settings-title">Settings</h1>
-          </div>
-        </div>
-
-        <div class="panel">
-          <div class="panel-header">
-            <div>
-              <h2>Gemini</h2>
-              <p>
-                Gemini is configured securely on the server.
-              </p>
-            </div>
-          </div>
-
-          <div class="notice">
-            <strong>Server-side API key</strong>
-            <span>
-              The Gemini API key is read only from the
-              LD76_GEMINI_API_KEY environment variable on the server.
-              It is never sent to or stored in frontend JavaScript.
-            </span>
-          </div>
-
-          <div class="notice">
-            <strong>Configure the key</strong>
-            <span>
-              Add or change LD76_GEMINI_API_KEY in the Vercel Project
-              Environment Variables, then redeploy if required.
-            </span>
-          </div>
-
-          <button
-            id="gemini-test-button"
-            class="secondary-button full-width"
-            type="button"
-          >
-            Test Gemini Connection
-          </button>
-
-          <button
-            id="refresh-models-button"
-            class="secondary-button full-width"
-            type="button"
-          >
-            Refresh Available Models
-          </button>
-        </div>
-
-        <div class="panel">
-          <div class="panel-header">
-            <div>
-              <h2>Agent permissions</h2>
-              <p>
-                Sensitive operations require confirmation by default.
-              </p>
-            </div>
-          </div>
-
-          <label for="permission-mode" class="field-label">
-            Permission mode
-          </label>
-
-          <select
-            id="permission-mode"
-            class="field-control"
-          >
-            <option value="always-ask">
-              Always Ask
-            </option>
-          </select>
-        </div>
-
-        <div class="panel">
-          <div class="panel-header">
-            <div>
-              <h2>Local data</h2>
-              <p>
-                Conversation history and local application state
-                will be stored on this device.
-              </p>
-            </div>
-          </div>
-
-          <button
-            id="clear-local-data-button"
-            class="danger-button full-width"
-            type="button"
-          >
-            Clear Local Data
-          </button>
-        </div>
-      </section>
-
-    </main>
-
-    <!-- MOBILE NAVIGATION -->
-    <nav
-      id="main-navigation"
-      class="bottom-navigation"
-      aria-label="Main navigation"
-    >
-      <button
-        class="nav-item active"
-        type="button"
-        data-navigate="chat"
-        aria-current="page"
-      >
-        <span class="nav-icon">⌘</span>
-        <span>Chat</span>
-      </button>
-
-      <button
-        class="nav-item"
-        type="button"
-        data-navigate="github"
-      >
-        <span class="nav-icon">⑂</span>
-        <span>GitHub</span>
-      </button>
-
-      <button
-        class="nav-item"
-        type="button"
-        data-navigate="settings"
-      >
-        <span class="nav-icon">⚙</span>
-        <span>Settings</span>
-      </button>
-    </nav>
-
-    <!-- GLOBAL MESSAGE -->
-    <div
-      id="global-message"
-      class="global-message hidden"
-      role="status"
-      aria-live="polite"
-    ></div>
-
-  </div>
-
-  <script src="/app.js" defer></script>
-</body>
+  </div>  <script
+    src="/app.js"
+    defer
+  ></script></body>
 </html>
