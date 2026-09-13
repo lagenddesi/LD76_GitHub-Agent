@@ -1,6 +1,8 @@
 const DB_NAME = "ld76-code-agent";
 const DB_VERSION = 1;
 const STORE_NAME = "messages";
+const ACTIVE_CONVERSATION_KEY =
+  "ld76_active_conversation_id";
 
 let databasePromise = null;
 
@@ -15,6 +17,57 @@ export function createConversationId() {
   return `chat-${Date.now()}-${Math.random()
     .toString(36)
     .slice(2)}`;
+}
+
+export function getActiveConversationId() {
+  try {
+    return (
+      localStorage.getItem(
+        ACTIVE_CONVERSATION_KEY
+      ) || ""
+    ).trim();
+  } catch (error) {
+    console.error(
+      "Failed to read active conversation ID:",
+      error
+    );
+
+    return "";
+  }
+}
+
+export function setActiveConversationId(
+  conversationId
+) {
+  const cleanId =
+    String(conversationId || "").trim();
+
+  if (!cleanId) {
+    return;
+  }
+
+  try {
+    localStorage.setItem(
+      ACTIVE_CONVERSATION_KEY,
+      cleanId
+    );
+  } catch (error) {
+    console.error(
+      "Failed to save active conversation ID:",
+      error
+    );
+  }
+}
+
+export function startNewConversation() {
+  const conversationId =
+    createConversationId();
+
+  setActiveConversationId(
+    conversationId
+  );
+
+  return conversationId;
 }
 
 export async function saveMessage({
@@ -47,7 +100,8 @@ export async function saveMessage({
     role: cleanRole,
     content: cleanContent,
     metadata:
-      metadata && typeof metadata === "object"
+      metadata &&
+      typeof metadata === "object"
         ? metadata
         : null,
     createdAt: Date.now()
@@ -146,7 +200,7 @@ export async function deleteConversation(
   await transaction(
     db,
     "readwrite",
-    async (store) => {
+    (store) => {
       for (const message of messages) {
         store.delete(message.id);
       }
@@ -164,6 +218,17 @@ export async function clearAllHistory() {
       store.clear();
     }
   );
+
+  try {
+    localStorage.removeItem(
+      ACTIVE_CONVERSATION_KEY
+    );
+  } catch (error) {
+    console.error(
+      "Failed to clear active conversation ID:",
+      error
+    );
+  }
 }
 
 export async function getConversationIds() {
@@ -387,7 +452,6 @@ function transaction(
   return new Promise(
     (resolve, reject) => {
       let result;
-
       let transactionObject;
 
       try {
@@ -407,11 +471,7 @@ function transaction(
 
         transactionObject.oncomplete =
           () => {
-            resolve(
-              result instanceof Promise
-                ? result
-                : result
-            );
+            resolve(result);
           };
 
         transactionObject.onerror =
@@ -445,20 +505,22 @@ function requestToPromise(
 ) {
   return new Promise(
     (resolve, reject) => {
-      request.onsuccess = () => {
-        resolve(
-          request.result
-        );
-      };
+      request.onsuccess =
+        () => {
+          resolve(
+            request.result
+          );
+        };
 
-      request.onerror = () => {
-        reject(
-          request.error ||
-            new Error(
-              "IndexedDB request failed."
-            )
-        );
-      };
+      request.onerror =
+        () => {
+          reject(
+            request.error ||
+              new Error(
+                "IndexedDB request failed."
+              )
+          );
+        };
     }
   );
 }
