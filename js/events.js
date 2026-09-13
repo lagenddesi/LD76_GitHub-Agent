@@ -4,7 +4,8 @@ import { elements } from "./dom.js";
 import {
   hideAgentPermission,
   updateAgentPermissionUI,
-  showGlobalMessage
+  showGlobalMessage,
+  addWelcomeMessage
 } from "./ui.js";
 
 import {
@@ -18,6 +19,11 @@ import {
   requestPermission,
   resetAgent
 } from "./agent.js";
+
+import {
+  startNewConversation,
+  clearAllHistory
+} from "./history.js";
 
 export function initializeEvents() {
   bindChatEvents();
@@ -64,27 +70,6 @@ async function submitChat() {
     "";
 
   if (!message) {
-    return;
-  }
-
-  if (!state.githubConnected) {
-    showGlobalMessage(
-      "Pehle GitHub connect karo.",
-      "error"
-    );
-
-    return;
-  }
-
-  if (
-    !state.selectedRepository ||
-    !state.selectedBranch
-  ) {
-    showGlobalMessage(
-      "Repository aur branch select karo.",
-      "error"
-    );
-
     return;
   }
 
@@ -213,42 +198,84 @@ async function handlePermissionAction(
 function bindLocalDataEvents() {
   elements.newChatButton?.addEventListener(
     "click",
-    () => {
-      resetAgent();
+    async () => {
+      if (state.busy) {
+        return;
+      }
 
-      hideAgentPermission();
+      try {
+        resetAgent();
 
-      elements.chatMessages?.replaceChildren();
+        hideAgentPermission();
 
-      showGlobalMessage(
-        "New chat started.",
-        "success"
-      );
+        state.conversationId =
+          startNewConversation();
+
+        state.historyLoaded = true;
+
+        elements.chatMessages?.replaceChildren();
+
+        addWelcomeMessage();
+
+        showGlobalMessage(
+          "New chat started.",
+          "success"
+        );
+      } catch (error) {
+        console.error(
+          "New chat failed:",
+          error
+        );
+
+        showGlobalMessage(
+          "New chat start nahi ho saka.",
+          "error"
+        );
+      }
     }
   );
 
   elements.clearLocalDataButton?.addEventListener(
     "click",
-    () => {
+    async () => {
+      if (state.busy) {
+        return;
+      }
+
       try {
+        await clearAllHistory();
+
         localStorage.clear();
         sessionStorage.clear();
+
+        resetAgent();
+
+        hideAgentPermission();
+
+        state.conversationId =
+          startNewConversation();
+
+        state.historyLoaded = true;
+
+        elements.chatMessages?.replaceChildren();
+
+        addWelcomeMessage();
+
+        showGlobalMessage(
+          "Local data aur chat history clear ho gayi.",
+          "success"
+        );
       } catch (error) {
         console.error(
           "Local data clear failed:",
           error
         );
+
+        showGlobalMessage(
+          "Local data clear nahi ho saka.",
+          "error"
+        );
       }
-
-      resetAgent();
-      hideAgentPermission();
-
-      elements.chatMessages?.replaceChildren();
-
-      showGlobalMessage(
-        "Local data cleared.",
-        "success"
-      );
     }
   );
 }
