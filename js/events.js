@@ -1,10 +1,17 @@
 import { state } from "./state.js";
 import { elements } from "./dom.js";
+
 import {
   hideAgentPermission,
   updateAgentPermissionUI,
   showGlobalMessage
 } from "./ui.js";
+
+import {
+  testGeminiConnection,
+  refreshModels
+} from "./gemini.js";
+
 import {
   runAgent,
   applyChanges,
@@ -15,6 +22,7 @@ import {
 export function initializeEvents() {
   bindChatEvents();
   bindModelEvents();
+  bindGeminiEvents();
   bindPermissionEvents();
   bindLocalDataEvents();
 }
@@ -109,6 +117,22 @@ function bindModelEvents() {
       state.selectedModel =
         elements.modelSelector.value ||
         "auto";
+    }
+  );
+}
+
+function bindGeminiEvents() {
+  elements.geminiTestButton?.addEventListener(
+    "click",
+    async () => {
+      await testGeminiConnection();
+    }
+  );
+
+  elements.refreshModelsButton?.addEventListener(
+    "click",
+    async () => {
+      await refreshModels();
     }
   );
 }
