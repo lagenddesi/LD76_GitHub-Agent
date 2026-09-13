@@ -142,19 +142,22 @@ export async function runAgent(message) {
 
     removeProgress();
 
+    const readableError =
+      getReadableError(error);
+
     appendMessage(
       "error",
-      error.message ||
-        "Agent request failed."
+      readableError
     );
 
     showGlobalMessage(
-      error.message ||
-        "Agent request failed.",
+      readableError,
       "error"
     );
 
-    throw error;
+    throw new Error(
+      readableError
+    );
   } finally {
     if (
       state.agent.phase !==
@@ -203,7 +206,9 @@ export async function createPlan(
     !data?.ok
   ) {
     throw new Error(
-      data?.error ||
+      getReadableError(
+        data?.error
+      ) ||
         "Agent planning failed."
     );
   }
@@ -218,7 +223,9 @@ export async function createPlan(
     );
   }
 
-  return data.plan;
+  return normalizePlan(
+    data.plan
+  );
 }
 
 export async function createChanges(
@@ -259,7 +266,9 @@ export async function createChanges(
     !data?.ok
   ) {
     throw new Error(
-      data?.error ||
+      getReadableError(
+        data?.error
+      ) ||
         "Agent change generation failed."
     );
   }
@@ -275,7 +284,17 @@ export async function createChanges(
     );
   }
 
-  return data;
+  return {
+    ...data,
+    changes:
+      normalizeChanges(
+        data.changes
+      ),
+    verification:
+      normalizeStringArray(
+        data.verification
+      )
+  };
 }
 
 export async function requestPermission(
@@ -348,7 +367,9 @@ export async function requestPermission(
     !data?.ok
   ) {
     throw new Error(
-      data?.error ||
+      getReadableError(
+        data?.error
+      ) ||
         "Permission request failed."
     );
   }
@@ -484,7 +505,9 @@ export async function applyChanges(
       !data?.ok
     ) {
       throw new Error(
-        data?.error ||
+        getReadableError(
+          data?.error
+        ) ||
           "GitHub apply failed."
       );
     }
@@ -522,7 +545,9 @@ export async function applyChanges(
         "verification-failed";
 
       throw new Error(
-        verification.error ||
+        getReadableError(
+          verification.error
+        ) ||
           "GitHub changes apply ho gayi hain lekin verification fail ho gayi."
       );
     }
@@ -565,19 +590,22 @@ export async function applyChanges(
 
     removeProgress();
 
+    const readableError =
+      getReadableError(error);
+
     appendMessage(
       "error",
-      error.message ||
-        "GitHub apply workflow failed."
+      readableError
     );
 
     showGlobalMessage(
-      error.message ||
-        "GitHub apply workflow failed.",
+      readableError,
       "error"
     );
 
-    throw error;
+    throw new Error(
+      readableError
+    );
   } finally {
     setBusy(false);
   }
@@ -640,12 +668,24 @@ export async function verifyChanges(
       ...data,
       verified: false,
       error:
-        data?.error ||
+        getReadableError(
+          data?.error
+        ) ||
         "Post-apply verification failed."
     };
   }
 
-  return data;
+  return {
+    ...data,
+    verifiedFiles:
+      normalizeStringArray(
+        data.verifiedFiles
+      ),
+    verification:
+      normalizeStringArray(
+        data.verification
+      )
+  };
 }
 
 export function resetAgent() {
@@ -687,65 +727,68 @@ function buildPermissionRequest(
       changes.map(
         (change) => ({
           operation:
-            change.operation,
+            safeString(
+              change.operation
+            ),
           path:
-            change.path,
+            safeString(
+              change.path
+            ),
           reason:
-            change.reason || ""
+            safeString(
+              change.reason
+            )
         })
       )
   };
 }
 
 function formatPlan(plan) {
+  const normalized =
+    normalizePlan(plan);
+
   const lines = [];
 
   lines.push(
-    `Plan: ${plan.summary || "No summary provided."}`
+    `Plan: ${normalized.summary}`
   );
 
   if (
-    plan.analysis
+    normalized.analysis
   ) {
     lines.push(
       "",
-      `Analysis: ${plan.analysis}`
+      `Analysis: ${normalized.analysis}`
     );
   }
 
   if (
-    Array.isArray(
-      plan.changes
-    ) &&
-    plan.changes.length
+    normalized.changes.length
   ) {
     lines.push(
       "",
       "Planned changes:"
     );
 
-    plan.changes.forEach(
+    normalized.changes.forEach(
       (change, index) => {
         lines.push(
-          `${index + 1}. ${change.operation} ${change.path}`,
-          `   ${change.reason || change.details || ""}`
+          `${index + 1}. ${safeString(change.operation)} ${safeString(change.path)}`,
+          `   ${safeString(change.reason || change.details)}`
         );
       }
     );
   }
 
   if (
-    Array.isArray(
-      plan.verification
-    ) &&
-    plan.verification.length
+    normalized.verification.length
   ) {
     lines.push(
       "",
       "Verification:"
     );
 
-    plan.verification.forEach(
+    normalized.verification.forEach(
       (step, index) => {
         lines.push(
           `${index + 1}. ${step}`
@@ -754,10 +797,10 @@ function formatPlan(plan) {
     );
   }
 
-  if (plan.risk) {
+  if (normalized.risk) {
     lines.push(
       "",
-      `Risk: ${plan.risk}`
+      `Risk: ${normalized.risk}`
     );
   }
 
@@ -770,11 +813,9 @@ function formatChanges(
   result
 ) {
   const changes =
-    Array.isArray(
+    normalizeChanges(
       result?.changes
-    )
-      ? result.changes
-      : [];
+    );
 
   const lines = [
     `Exact changes generated: ${changes.length}`
@@ -786,26 +827,32 @@ function formatChanges(
         "",
         `${index + 1}. ${String(
           change.operation || ""
-        ).toUpperCase()} ${change.path}`,
+        ).toUpperCase()} ${safeString(
+          change.path
+        )}`,
         change.reason
-          ? `Reason: ${change.reason}`
+          ? `Reason: ${safeString(
+              change.reason
+            )}`
           : ""
       );
     }
   );
 
-  if (
-    Array.isArray(
+  const verification =
+    normalizeStringArray(
       result?.verification
-    ) &&
-    result.verification.length
+    );
+
+  if (
+    verification.length
   ) {
     lines.push(
       "",
       "Verification after apply:"
     );
 
-    result.verification.forEach(
+    verification.forEach(
       (step, index) => {
         lines.push(
           `${index + 1}. ${step}`
@@ -834,7 +881,9 @@ function formatPermissionRequest(
       lines.push(
         `${index + 1}. ${String(
           change.operation
-        ).toUpperCase()} ${change.path}`
+        ).toUpperCase()} ${safeString(
+          change.path
+        )}`
       );
 
       if (change.reason) {
@@ -869,7 +918,9 @@ function permissionGrantedMessage(
 
   const expires =
     data?.expiresAt
-      ? ` Expires: ${data.expiresAt}.`
+      ? ` Expires: ${safeString(
+          data.expiresAt
+        )}.`
       : "";
 
   return `${label} granted.${expires} Actual GitHub write ab apply step mein hoga.`;
@@ -879,29 +930,32 @@ function formatApplyResult(
   apply,
   verification
 ) {
-  const verifiedCount =
+  const verifiedFiles =
     Array.isArray(
       verification?.verifiedFiles
     )
-      ? verification.verifiedFiles.length
-      : 0;
+      ? verification.verifiedFiles
+      : [];
 
   const commitSha =
-    apply?.commit?.sha ||
-    "";
+    safeString(
+      apply?.commit?.sha
+    );
 
   const lines = [
     "GitHub changes successfully applied.",
     "",
     `Commit: ${commitSha}`,
-    `Verified files: ${verifiedCount}`
+    `Verified files: ${verifiedFiles.length}`
   ];
 
   if (
     apply?.commit?.url
   ) {
     lines.push(
-      `Commit URL: ${apply.commit.url}`
+      `Commit URL: ${safeString(
+        apply.commit.url
+      )}`
     );
   }
 
@@ -985,6 +1039,187 @@ function getRepo() {
   );
 }
 
+function normalizePlan(
+  value
+) {
+  const plan =
+    value &&
+    typeof value === "object"
+      ? value
+      : {};
+
+  return {
+    ...plan,
+    summary:
+      safeString(
+        plan.summary
+      ) ||
+      "No summary provided.",
+    analysis:
+      safeString(
+        plan.analysis
+      ),
+    changes:
+      normalizeChanges(
+        plan.changes
+      ),
+    verification:
+      normalizeStringArray(
+        plan.verification
+      ),
+    risk:
+      safeString(
+        plan.risk
+      ) ||
+      "unknown"
+  };
+}
+
+function normalizeChanges(
+  changes
+) {
+  if (
+    !Array.isArray(changes)
+  ) {
+    return [];
+  }
+
+  return changes
+    .filter(
+      (change) =>
+        change &&
+        typeof change ===
+          "object"
+    )
+    .map(
+      (change) => ({
+        ...change,
+        operation:
+          safeString(
+            change.operation
+          ),
+        path:
+          safeString(
+            change.path
+          ),
+        reason:
+          safeString(
+            change.reason
+          ),
+        details:
+          safeString(
+            change.details
+          )
+      })
+    );
+}
+
+function normalizeStringArray(
+  value
+) {
+  if (
+    !Array.isArray(value)
+  ) {
+    return [];
+  }
+
+  return value.map(
+    (item) =>
+      safeString(item)
+  );
+}
+
+function safeString(
+  value
+) {
+  if (
+    typeof value ===
+      "string"
+  ) {
+    return value;
+  }
+
+  if (
+    value === null ||
+    value === undefined
+  ) {
+    return "";
+  }
+
+  if (
+    typeof value ===
+      "number" ||
+    typeof value ===
+      "boolean"
+  ) {
+    return String(value);
+  }
+
+  return getReadableError(
+    value
+  );
+}
+
+function getReadableError(
+  error
+) {
+  if (
+    typeof error ===
+      "string"
+  ) {
+    return error;
+  }
+
+  if (
+    error &&
+    typeof error.message ===
+      "string"
+  ) {
+    return error.message;
+  }
+
+  if (
+    error &&
+    typeof error.error ===
+      "string"
+  ) {
+    return error.error;
+  }
+
+  if (
+    error &&
+    error.error &&
+    typeof error.error.message ===
+      "string"
+  ) {
+    return error.error.message;
+  }
+
+  if (
+    error &&
+    typeof error.statusText ===
+      "string"
+  ) {
+    return error.statusText;
+  }
+
+  try {
+    const serialized =
+      JSON.stringify(error);
+
+    if (
+      serialized &&
+      serialized !== "{}"
+    ) {
+      return serialized;
+    }
+  } catch {
+    // Ignore serialization errors.
+  }
+
+  return "Agent request failed.";
+}
+
 async function readJson(
   response
 ) {
@@ -995,11 +1230,28 @@ async function readJson(
     return {};
   }
 
+  let data;
+
   try {
-    return JSON.parse(text);
+    data =
+      JSON.parse(text);
   } catch {
     throw new Error(
       `Server returned invalid JSON (${response.status}).`
     );
   }
-    }
+
+  if (
+    data &&
+    typeof data === "object" &&
+    data.error !== undefined &&
+    typeof data.error !== "string"
+  ) {
+    data.error =
+      getReadableError(
+        data.error
+      );
+  }
+
+  return data;
+}
