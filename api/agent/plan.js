@@ -92,7 +92,8 @@ async function githubRequest(accessToken, url) {
 
   if (!githubResponse.ok) {
     const error = new Error(
-      data?.message || "GitHub API request failed."
+      data?.message ||
+        "GitHub API request failed."
     );
 
     error.status = githubResponse.status;
@@ -188,7 +189,8 @@ async function loadFile(
     );
   }
 
-  const normalized = data.content.replace(/\s/g, "");
+  const normalized =
+    data.content.replace(/\s/g, "");
 
   let binary;
 
@@ -202,7 +204,8 @@ async function loadFile(
 
   const bytes = Uint8Array.from(
     binary,
-    (character) => character.charCodeAt(0)
+    (character) =>
+      character.charCodeAt(0)
   );
 
   const content = new TextDecoder(
@@ -222,7 +225,8 @@ async function loadFile(
 
 function scoreFile(file, message) {
   const path = file.path.toLowerCase();
-  const lowerMessage = message.toLowerCase();
+  const lowerMessage =
+    message.toLowerCase();
 
   let score = 0;
 
@@ -261,7 +265,9 @@ function scoreFile(file, message) {
 
   const parts = path
     .split(/[/_.-]+/)
-    .filter((part) => part.length >= 3);
+    .filter(
+      (part) => part.length >= 3
+    );
 
   for (const part of parts) {
     if (lowerMessage.includes(part)) {
@@ -272,11 +278,17 @@ function scoreFile(file, message) {
   return score;
 }
 
-function selectRelevantFiles(files, message) {
+function selectRelevantFiles(
+  files,
+  message
+) {
   return files
     .map((file) => ({
       ...file,
-      score: scoreFile(file, message)
+      score: scoreFile(
+        file,
+        message
+      )
     }))
     .sort(
       (first, second) =>
@@ -292,17 +304,19 @@ async function loadRelevantContext(
   branch,
   message
 ) {
-  const tree = await loadRepositoryTree(
-    accessToken,
-    owner,
-    repo,
-    branch
-  );
+  const tree =
+    await loadRepositoryTree(
+      accessToken,
+      owner,
+      repo,
+      branch
+    );
 
-  const selectedFiles = selectRelevantFiles(
-    tree.files,
-    message
-  );
+  const selectedFiles =
+    selectRelevantFiles(
+      tree.files,
+      message
+    );
 
   const files = [];
 
@@ -315,13 +329,14 @@ async function loadRelevantContext(
     }
 
     try {
-      const loaded = await loadFile(
-        accessToken,
-        owner,
-        repo,
-        file.path,
-        branch
-      );
+      const loaded =
+        await loadFile(
+          accessToken,
+          owner,
+          repo,
+          file.path,
+          branch
+        );
 
       files.push(loaded);
     } catch (error) {
@@ -361,7 +376,63 @@ function buildFileContext(files) {
     .join("\n\n");
 }
 
-function buildPrompt({
+function isReadOnlyInspectionRequest(
+  message
+) {
+  const text =
+    message.toLowerCase();
+
+  const inspectionTerms = [
+    "inspect",
+    "structure",
+    "project structure",
+    "folder structure",
+    "file structure",
+    "repository structure",
+    "repo structure",
+    "files batao",
+    "files dikhao",
+    "structure batao",
+    "structure kya hai",
+    "project kya hai",
+    "repository kya hai",
+    "project ka purpose",
+    "project kis liye hai"
+  ];
+
+  const writeTerms = [
+    "modify",
+    "change",
+    "update",
+    "create",
+    "delete",
+    "remove",
+    "add",
+    "fix",
+    "implement",
+    "apply",
+    "edit"
+  ];
+
+  const hasInspectionIntent =
+    inspectionTerms.some(
+      (term) =>
+        text.includes(term)
+    );
+
+  const hasWriteIntent =
+    writeTerms.some(
+      (term) =>
+        text.includes(term)
+    );
+
+  return (
+    hasInspectionIntent &&
+    !hasWriteIntent
+  );
+}
+
+function buildInspectionPrompt({
   message,
   owner,
   repo,
@@ -369,59 +440,43 @@ function buildPrompt({
   context
 }) {
   return [
-    "You are the planning engine of LD76 Code Agent.",
+    "You are the read-only repository inspection engine of LD76 Code Agent.",
     "",
-    "You are working against a real GitHub repository.",
-    "Do not invent files, repository state, APIs, test results, or changes.",
-    "Do not claim that any file has been modified.",
-    "You are creating a proposed implementation plan only.",
+    "The user requested repository inspection.",
+    "This is a READ-ONLY operation.",
+    "Do not propose file changes.",
+    "Do not request a repository link.",
+    "Do not request the user to paste a file tree.",
+    "The repository has already been fetched directly from GitHub.",
+    "Use ONLY the supplied GitHub repository tree and readable file contents.",
+    "Do not invent files, folders, frameworks, APIs, dependencies, or project details.",
+    "If a fact cannot be established from the supplied context, clearly say that it could not be determined.",
     "",
     `Repository: ${owner}/${repo}`,
     `Branch: ${branch}`,
     "",
     "Repository tree:",
-    buildTreeContext(context.tree) || "(empty)",
+    buildTreeContext(context.tree) ||
+      "(empty repository tree)",
     "",
-    "Relevant files:",
+    "Readable files:",
     buildFileContext(context.files) ||
       "(no readable relevant files)",
     "",
     "User request:",
     message,
     "",
-    "Return ONLY valid JSON.",
-    "The JSON must have this exact top-level structure:",
-    "{",
-    '  "summary": "short explanation",',
-    '  "analysis": "technical analysis",',
-    '  "changes": [',
-    "    {",
-    '      "operation": "update|create|delete",',
-    '      "path": "repository/path",',
-    '      "reason": "why this file changes",',
-    '      "details": "what must change"',
-    "    }",
-    "  ],",
-    '  "verification": [',
-    '    "specific verification step"',
-    "  ],",
-    '  "risk": "low|medium|high"',
-    '  "requiresWrite": true',
-    "}",
-    "",
-    "Rules:",
-    "1. Use update only for files that already exist in the supplied tree.",
-    "2. Use create only for paths that do not already exist.",
-    "3. Use delete only when the user explicitly requests deletion or it is strictly required.",
-    "4. Never invent a path when the repository context provides enough information.",
-    "5. If the request needs no code changes, set changes to an empty array and requiresWrite to false.",
-    "6. Do not include source code in this planning response.",
-    "7. Do not perform GitHub write operations.",
-    "8. Verification steps must be concrete and relevant to the proposed changes."
+    "Answer the user directly in normal conversational text.",
+    "Explain the actual project type, important folders and files, entry points, configuration files, and overall structure when those facts are available.",
+    "Do not output JSON.",
+    "Do not claim that anything was modified.",
+    "Do not ask for additional repository information."
   ].join("\n");
 }
 
-async function getAvailableModels(apiKey) {
+async function getAvailableModels(
+  apiKey
+) {
   const modelsUrl =
     new URL(
       "https://generativelanguage.googleapis.com/v1beta/models"
@@ -437,11 +492,11 @@ async function getAvailableModels(apiKey) {
     "1000"
   );
 
-  const modelsResponse = await fetch(
-    modelsUrl
-  );
+  const modelsResponse =
+    await fetch(modelsUrl);
 
-  const text = await modelsResponse.text();
+  const text =
+    await modelsResponse.text();
 
   let data;
 
@@ -458,10 +513,13 @@ async function getAvailableModels(apiKey) {
     );
   }
 
-  return Array.isArray(data?.models)
+  return Array.isArray(
+    data?.models
+  )
     ? data.models.filter(
         (item) =>
-          typeof item?.name === "string" &&
+          typeof item?.name ===
+            "string" &&
           Array.isArray(
             item.supportedGenerationMethods
           ) &&
@@ -472,7 +530,10 @@ async function getAvailableModels(apiKey) {
     : [];
 }
 
-function chooseModel(models, requestedModel) {
+function chooseModel(
+  models,
+  requestedModel
+) {
   if (!models.length) {
     throw new Error(
       "No Gemini model supporting generateContent is available."
@@ -483,10 +544,12 @@ function chooseModel(models, requestedModel) {
     requestedModel &&
     requestedModel !== "auto"
   ) {
-    const exact = models.find(
-      (model) =>
-        model.name === requestedModel
-    );
+    const exact =
+      models.find(
+        (model) =>
+          model.name ===
+          requestedModel
+      );
 
     if (!exact) {
       throw new Error(
@@ -498,33 +561,53 @@ function chooseModel(models, requestedModel) {
   }
 
   return [...models]
-    .sort((first, second) => {
-      const firstOutput =
-        Number(first.outputTokenLimit) || 0;
-      const secondOutput =
-        Number(second.outputTokenLimit) || 0;
+    .sort(
+      (first, second) => {
+        const firstOutput =
+          Number(
+            first.outputTokenLimit
+          ) || 0;
 
-      if (
-        secondOutput !== firstOutput
-      ) {
-        return secondOutput - firstOutput;
+        const secondOutput =
+          Number(
+            second.outputTokenLimit
+          ) || 0;
+
+        if (
+          secondOutput !==
+          firstOutput
+        ) {
+          return (
+            secondOutput -
+            firstOutput
+          );
+        }
+
+        const firstInput =
+          Number(
+            first.inputTokenLimit
+          ) || 0;
+
+        const secondInput =
+          Number(
+            second.inputTokenLimit
+          ) || 0;
+
+        if (
+          secondInput !==
+          firstInput
+        ) {
+          return (
+            secondInput -
+            firstInput
+          );
+        }
+
+        return first.name.localeCompare(
+          second.name
+        );
       }
-
-      const firstInput =
-        Number(first.inputTokenLimit) || 0;
-      const secondInput =
-        Number(second.inputTokenLimit) || 0;
-
-      if (
-        secondInput !== firstInput
-      ) {
-        return secondInput - firstInput;
-      }
-
-      return first.name.localeCompare(
-        second.name
-      );
-    })[0].name;
+    )[0].name;
 }
 
 async function generatePlan(
@@ -533,7 +616,9 @@ async function generatePlan(
   requestedModel
 ) {
   const models =
-    await getAvailableModels(apiKey);
+    await getAvailableModels(
+      apiKey
+    );
 
   const selectedModel =
     chooseModel(
@@ -586,7 +671,8 @@ async function generatePlan(
   let data;
 
   try {
-    data = JSON.parse(responseText);
+    data =
+      JSON.parse(responseText);
   } catch {
     data = null;
   }
@@ -644,9 +730,13 @@ async function generatePlan(
     !plan ||
     typeof plan !== "object" ||
     !Array.isArray(plan.changes) ||
-    !Array.isArray(plan.verification) ||
-    typeof plan.summary !== "string" ||
-    typeof plan.analysis !== "string"
+    !Array.isArray(
+      plan.verification
+    ) ||
+    typeof plan.summary !==
+      "string" ||
+    typeof plan.analysis !==
+      "string"
   ) {
     throw new Error(
       "Gemini returned an invalid coding plan structure."
@@ -682,9 +772,12 @@ async function generatePlan(
   return {
     model: selectedModel,
     plan: {
-      summary: plan.summary,
-      analysis: plan.analysis,
-      changes: safeChanges,
+      summary:
+        plan.summary,
+      analysis:
+        plan.analysis,
+      changes:
+        safeChanges,
       verification:
         plan.verification.filter(
           (item) =>
@@ -692,7 +785,11 @@ async function generatePlan(
             "string"
         ),
       risk:
-        ["low", "medium", "high"].includes(
+        [
+          "low",
+          "medium",
+          "high"
+        ].includes(
           plan.risk
         )
           ? plan.risk
@@ -700,6 +797,116 @@ async function generatePlan(
       requiresWrite:
         safeChanges.length > 0
     }
+  };
+}
+
+async function generateInspectionAnswer(
+  apiKey,
+  prompt,
+  requestedModel
+) {
+  const models =
+    await getAvailableModels(
+      apiKey
+    );
+
+  const selectedModel =
+    chooseModel(
+      models,
+      requestedModel
+    );
+
+  const modelId =
+    selectedModel.replace(
+      /^models\//,
+      ""
+    );
+
+  const url =
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+      modelId
+    )}:generateContent?key=${encodeURIComponent(
+      apiKey
+    )}`;
+
+  const geminiResponse =
+    await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type":
+          "application/json"
+      },
+      body: JSON.stringify({
+        contents: [
+          {
+            role: "user",
+            parts: [
+              {
+                text: prompt
+              }
+            ]
+          }
+        ],
+        generationConfig: {
+          temperature: 0.1
+        }
+      })
+    });
+
+  const responseText =
+    await geminiResponse.text();
+
+  let data;
+
+  try {
+    data =
+      JSON.parse(responseText);
+  } catch {
+    data = null;
+  }
+
+  if (!geminiResponse.ok) {
+    throw new Error(
+      data?.error?.message ||
+        "Gemini inspection request failed."
+    );
+  }
+
+  const candidates =
+    Array.isArray(
+      data?.candidates
+    )
+      ? data.candidates
+      : [];
+
+  const parts =
+    Array.isArray(
+      candidates[0]?.content?.parts
+    )
+      ? candidates[0].content.parts
+      : [];
+
+  const answer =
+    parts
+      .filter(
+        (part) =>
+          typeof part?.text ===
+          "string"
+      )
+      .map(
+        (part) => part.text
+      )
+      .join("");
+
+  if (!answer.trim()) {
+    throw new Error(
+      "Gemini returned an empty inspection response."
+    );
+  }
+
+  return {
+    model: selectedModel,
+    answer: answer.trim()
   };
 }
 
@@ -748,28 +955,34 @@ export default async function handler(
   }
 
   const message =
-    typeof body.message === "string"
+    typeof body.message ===
+    "string"
       ? body.message.trim()
       : "";
 
   const owner =
-    typeof body.owner === "string"
+    typeof body.owner ===
+    "string"
       ? body.owner.trim()
       : "";
 
   const repo =
-    typeof body.repo === "string"
+    typeof body.repo ===
+    "string"
       ? body.repo.trim()
       : "";
 
   const branch =
-    typeof body.branch === "string"
+    typeof body.branch ===
+    "string"
       ? body.branch.trim()
       : "";
 
   const model =
-    typeof body.model === "string"
-      ? body.model.trim() || "auto"
+    typeof body.model ===
+    "string"
+      ? body.model.trim() ||
+        "auto"
       : "auto";
 
   if (!message) {
@@ -816,6 +1029,77 @@ export default async function handler(
         message
       );
 
+    if (
+      isReadOnlyInspectionRequest(
+        message
+      )
+    ) {
+      const prompt =
+        buildInspectionPrompt({
+          message,
+          owner,
+          repo,
+          branch,
+          context
+        });
+
+      const result =
+        await generateInspectionAnswer(
+          apiKey,
+          prompt,
+          model
+        );
+
+      return response.status(200).json({
+        ok: true,
+        service:
+          "LD76 Code Agent",
+        operation:
+          "inspect",
+        model:
+          result.model,
+        repository: {
+          owner,
+          repo,
+          branch
+        },
+        context: {
+          treeFiles:
+            context.tree.files
+              .length,
+          treeTruncated:
+            context.tree
+              .truncated,
+          relevantFiles:
+            context.files.map(
+              (file) => ({
+                path:
+                  file.path,
+                sha:
+                  file.sha,
+                size:
+                  file.size
+              })
+            )
+        },
+        plan: {
+          summary:
+            "Read-only repository inspection completed.",
+          analysis:
+            result.answer,
+          changes: [],
+          verification: [
+            "Repository tree was fetched directly from GitHub.",
+            "No GitHub write operation was performed."
+          ],
+          risk: "low",
+          requiresWrite: false
+        },
+        answer:
+          result.answer
+      });
+    }
+
     const prompt =
       buildPrompt({
         message,
@@ -834,9 +1118,11 @@ export default async function handler(
 
     return response.status(200).json({
       ok: true,
-      service: "LD76 Code Agent",
+      service:
+        "LD76 Code Agent",
       operation: "plan",
-      model: result.model,
+      model:
+        result.model,
       repository: {
         owner,
         repo,
@@ -844,19 +1130,25 @@ export default async function handler(
       },
       context: {
         treeFiles:
-          context.tree.files.length,
+          context.tree.files
+            .length,
         treeTruncated:
-          context.tree.truncated,
+          context.tree
+            .truncated,
         relevantFiles:
           context.files.map(
             (file) => ({
-              path: file.path,
-              sha: file.sha,
-              size: file.size
+              path:
+                file.path,
+              sha:
+                file.sha,
+              size:
+                file.size
             })
           )
       },
-      plan: result.plan
+      plan:
+        result.plan
     });
   } catch (error) {
     console.error(
@@ -864,7 +1156,10 @@ export default async function handler(
       error
     );
 
-    if (error?.status === 401) {
+    if (
+      error?.status ===
+      401
+    ) {
       response.setHeader(
         "Set-Cookie",
         "ld76_github_access_token=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0"
@@ -877,7 +1172,10 @@ export default async function handler(
       });
     }
 
-    if (error?.status === 404) {
+    if (
+      error?.status ===
+      404
+    ) {
       return response.status(404).json({
         ok: false,
         error:
@@ -892,4 +1190,4 @@ export default async function handler(
         "Could not create a coding plan."
     });
   }
-}
+      }
