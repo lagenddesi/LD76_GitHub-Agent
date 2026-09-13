@@ -10,6 +10,12 @@ const GITHUB_API =
 const GITHUB_API_VERSION =
   "2022-11-28";
 
+const MAX_FILE_SIZE =
+  10 * 1024 * 1024;
+
+const MAX_COMMIT_MESSAGE_LENGTH =
+  500;
+
 export async function handleGitHubRoute(
   request,
   response,
@@ -424,6 +430,10 @@ async function handleStatus(
     if (
       githubResponse.status === 401
     ) {
+      clearAccessTokenCookie(
+        response
+      );
+
       return response.status(200).json({
         ok: true,
         connected: false
@@ -545,7 +555,11 @@ async function handleRepos(
           .map(
             (repository) => ({
               id: repository.id,
-              name: repository.name,
+              name:
+                typeof repository.name ===
+                "string"
+                  ? repository.name
+                  : "",
               fullName:
                 repository.full_name,
               private:
@@ -1160,7 +1174,10 @@ async function handleCommit(
     });
   }
 
-  if (message.length > 500) {
+  if (
+    message.length >
+    MAX_COMMIT_MESSAGE_LENGTH
+  ) {
     return response.status(400).json({
       ok: false,
       error:
@@ -1487,11 +1504,30 @@ async function handleCreateFile(
     });
   }
 
-  if (message.length > 500) {
+  if (
+    message.length >
+    MAX_COMMIT_MESSAGE_LENGTH
+  ) {
     return response.status(400).json({
       ok: false,
       error:
         "Commit message is too long."
+    });
+  }
+
+  const contentSize =
+    new TextEncoder().encode(
+      content
+    ).byteLength;
+
+  if (
+    contentSize >
+    MAX_FILE_SIZE
+  ) {
+    return response.status(413).json({
+      ok: false,
+      error:
+        "File content is too large. Maximum supported file size is 10 MB."
     });
   }
 
@@ -1660,11 +1696,30 @@ async function handleUpdateFile(
     });
   }
 
-  if (message.length > 500) {
+  if (
+    message.length >
+    MAX_COMMIT_MESSAGE_LENGTH
+  ) {
     return response.status(400).json({
       ok: false,
       error:
         "Commit message is too long."
+    });
+  }
+
+  const contentSize =
+    new TextEncoder().encode(
+      content
+    ).byteLength;
+
+  if (
+    contentSize >
+    MAX_FILE_SIZE
+  ) {
+    return response.status(413).json({
+      ok: false,
+      error:
+        "File content is too large. Maximum supported file size is 10 MB."
     });
   }
 
@@ -1778,8 +1833,7 @@ async function handleUpdateFile(
         "Could not update the GitHub file."
     });
   }
-}
-
+    }
 async function handleDeleteFile(
   request,
   response
@@ -1848,7 +1902,10 @@ async function handleDeleteFile(
     });
   }
 
-  if (message.length > 500) {
+  if (
+    message.length >
+    MAX_COMMIT_MESSAGE_LENGTH
+  ) {
     return response.status(400).json({
       ok: false,
       error:
@@ -2038,22 +2095,21 @@ async function handleCreateBranch(
     });
   }
 
+  if (
+    fromBranch &&
+    !isValidBranchName(fromBranch)
+  ) {
+    return response.status(400).json({
+      ok: false,
+      error:
+        "Invalid source branch name."
+    });
+  }
+
   try {
     let sourceSha = fromSha;
 
     if (!sourceSha) {
-      if (
-        !isValidBranchName(
-          fromBranch
-        )
-      ) {
-        return response.status(400).json({
-          ok: false,
-          error:
-            "Invalid source branch name."
-        });
-      }
-
       const sourceResponse =
         await githubFetch(
           `/repos/${encodeURIComponent(
@@ -2254,7 +2310,9 @@ async function handleDeleteBranch(
       await githubFetch(
         `/repos/${encodeURIComponent(
           owner
-        )}/${encodeURIComponent(repo)}`,
+        )}/${encodeURIComponent(
+          repo
+        )}`,
         token
       );
 
@@ -2307,7 +2365,9 @@ async function handleDeleteBranch(
       await githubFetch(
         `/repos/${encodeURIComponent(
           owner
-        )}/${encodeURIComponent(repo)}/git/refs/heads/${encodeURIComponent(
+        )}/${encodeURIComponent(
+          repo
+        )}/git/refs/heads/${encodeURIComponent(
           branch
         )}`,
         token,
@@ -2921,4 +2981,4 @@ function decodeBase64(
       fatal: false
     }
   ).decode(bytes);
-      }
+        }
