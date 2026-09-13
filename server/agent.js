@@ -16,6 +16,12 @@ const GEMINI_API =
 const MAX_CHANGES = 100;
 const MAX_FILE_SIZE = 500000;
 const MAX_CONTEXT_FILES = 30;
+const MAX_CHAT_HISTORY = 20;
+const MAX_CHAT_MESSAGE = 5000;
+
+/* =========================================================
+   ROUTER
+========================================================= */
 
 export async function handleAgentRoute(
   request,
@@ -72,6 +78,99 @@ export async function handleAgentRoute(
 }
 
 /* =========================================================
+   CHAT / SEMANTIC ROUTING
+========================================================= */
+
+async function handleChat(
+  request,
+  response
+) {
+  if (request.method !== "POST") {
+    return methodNotAllowed(response);
+  }
+
+  const body = parseBody(request);
+
+  if (!body) {
+    return badRequest(
+      response,
+      "Request body must be valid JSON."
+    );
+  }
+
+  const message =
+    cleanString(body.message);
+
+  if (
+    !message ||
+    message.length > MAX_CHAT_MESSAGE
+  ) {
+    return badRequest(
+      response,
+      "A valid user message is required."
+    );
+  }
+
+  const apiKey =
+    process.env.LD76_GEMINI_API_KEY;
+
+  if (!apiKey) {
+    return response.status(503).json({
+      ok: false,
+      error:
+        "Gemini API key is not configured."
+    });
+  }
+
+  const history =
+    normalizeChatHistory(
+      body.history
+    );
+
+  const repository =
+    normalizeOptionalRepositoryContext(
+      body
+    );
+
+  const selection =
+    await chooseGeminiModel(
+      apiKey,
+      body.model
+    );
+
+  const generated =
+    await generateGeminiJson({
+      apiKey,
+      selection,
+      prompt:
+        buildChatPrompt({
+          message,
+          history,
+          repository
+        })
+    });
+
+  const result =
+    normalizeChatResult(
+      generated?.value,
+      message
+    );
+
+  return response.status(200).json({
+    ok: true,
+    model: generated.model,
+    intent: result.intent,
+    response: result.response,
+    answer: result.response,
+    message: result.response,
+    requiresRepository:
+      result.requiresRepository,
+    execute:
+      result.execute
+  });
+}
+
+/* =========================================================
    PLAN
 ========================================================= */
 
@@ -107,7 +206,7 @@ async function handlePlan(
 
   if (
     !message ||
-    message.length > 5000
+    message.length > MAX_CHAT_MESSAGE
   ) {
     return badRequest(
       response,
@@ -133,11 +232,19 @@ async function handlePlan(
       context.branch
     );
 
-  if (
-    isReadOnlyInspectionRequest(
-      message
-    )
-  ) {
+  const requestedIntent =
+    normalizeChatIntent(
+      body.intent
+    );
+
+  const readOnly =
+    requestedIntent === "review" ||
+    requestedIntent === "inspection" ||
+    requestedIntent === "analyze" ||
+    body.readOnly === true ||
+    isReadOnlyInspectionRequest(message);
+
+  if (readOnly) {
     const files =
       await loadRelevantFiles(
         accessToken,
@@ -153,12 +260,17 @@ async function handlePlan(
         message,
         context,
         tree,
-        files
+        files,
+        history:
+          normalizeChatHistory(
+            body.history
+          )
       });
 
     return response.status(200).json({
       ok: true,
       operation: "inspect",
+      model: null,
       requiresWrite: false,
       changes: [],
       plan: {
@@ -211,12 +323,18 @@ async function handlePlan(
           message,
           context,
           tree,
-          files
+          files,
+          history:
+            normalizeChatHistory(
+              body.history
+            )
         })
     });
 
   const plan =
-    normalizePlan(generated.value);
+    normalizePlan(
+      generated.value
+    );
 
   const validatedPlan =
     validatePlanAgainstTree(
@@ -232,7 +350,8 @@ async function handlePlan(
       validatedPlan.changes.length > 0,
     changes:
       validatedPlan.changes,
-    plan: validatedPlan
+    plan:
+      validatedPlan
   });
 }
 
@@ -270,7 +389,10 @@ async function handleChanges(
   const message =
     cleanString(body.message);
 
-  if (!message || message.length > 5000) {
+  if (
+    !message ||
+    message.length > MAX_CHAT_MESSAGE
+  ) {
     return badRequest(
       response,
       "A valid user request is required."
@@ -325,11 +447,6 @@ async function handleChanges(
     });
   }
 
-  /*
-   * Critical safety rule:
-   * Read every existing file explicitly named by the plan.
-   * Do not rely only on the top-N relevant files.
-   */
   const exactFiles =
     await loadPlannedFiles(
       accessToken,
@@ -383,7 +500,11 @@ async function handleChanges(
           context,
           plan,
           tree,
-          files
+          files,
+          history:
+            normalizeChatHistory(
+              body.history
+            )
         })
     });
 
@@ -659,11 +780,6 @@ async function handleApply(
     });
   }
 
-  /*
-   * Critical preflight:
-   * Permission approval is based on a specific repository state.
-   * Re-read the branch immediately before writing.
-   */
   const preflight =
     await preflightChanges({
       accessToken,
@@ -801,161 +917,1561 @@ async function handleVerify(
       commitSha
     );
 
-  const verifiedFiles = [];
-  const failedFiles = [];
-
-  for (const change of changes) {
-    const file =
-      await getFileAtRef({
-        accessToken,
-        owner: context.owner,
-        repo: context.repo,
-        path: change.path,
-        ref: commitSha
-      });
-
-    if (change.operation === "delete") {
-      if (file) {
-        failedFiles.push({
-          path: change.path,
-          operation: change.operation,
-          reason:
-            "File still exists after delete."
-        });
-      } else {
-        verifiedFiles.push({
-          path: change.path,
-          operation: change.operation,
-          verified: true
-        });
-      }
-
-      continue;
-    }
-
-    if (!file) {
-      failedFiles.push({
-        path: change.path,
-        operation: change.operation,
-        reason:
-          "File does not exist after apply."
-      });
-
-      continue;
-    }
-
-    if (file.content !== change.content) {
-      failedFiles.push({
-        path: change.path,
-        operation: change.operation,
-        reason:
-          "Actual GitHub file content does not match the generated content."
-      });
-
-      continue;
-    }
-
-    verifiedFiles.push({
-      path: change.path,
-      operation: change.operation,
-      verified: true
+  const verified =
+    await verifyChangesAgainstCommit({
+      accessToken,
+      owner: context.owner,
+      repo: context.repo,
+      commit,
+      changes
     });
-  }
-
-  if (failedFiles.length) {
-    return response.status(409).json({
-      ok: false,
-      verified: false,
-      commit: {
-        sha: commitSha,
-        message: commit?.message || ""
-      },
-      verifiedFiles,
-      failedFiles,
-      error:
-        "GitHub commit exists, but post-apply verification failed."
-    });
-  }
 
   return response.status(200).json({
     ok: true,
-    verified: true,
+    verified,
     commit: {
-      sha: commitSha,
-      message: commit?.message || "",
-      url:
-        `https://github.com/${context.owner}/${context.repo}/commit/${commitSha}`
+      sha: commitSha
     },
-    branch: context.branch,
-    verifiedFiles,
-    failedFiles: []
+    repository: {
+      owner: context.owner,
+      repo: context.repo,
+      branch: context.branch
+    }
   });
 }
 
 /* =========================================================
-   CHAT
+   CHAT HELPERS
 ========================================================= */
 
-async function handleChat(
-  request,
-  response
+function normalizeChatHistory(
+  history
 ) {
-  if (request.method !== "POST") {
-    return methodNotAllowed(response);
+  if (!Array.isArray(history)) {
+    return [];
   }
 
-  const body = parseBody(request);
+  return history
+    .map((item) => {
+      if (!item || typeof item !== "object") {
+        return null;
+      }
 
-  if (!body) {
-    return badRequest(
-      response,
-      "Request body must be valid JSON."
+      const role =
+        item.role === "assistant" ||
+        item.role === "model"
+          ? "model"
+          : "user";
+
+      const text =
+        cleanString(
+          item.text ??
+          item.message ??
+          item.content
+        );
+
+      if (!text) {
+        return null;
+      }
+
+      return {
+        role,
+        text: text.slice(0, 4000)
+      };
+    })
+    .filter(Boolean)
+    .slice(-MAX_CHAT_HISTORY);
+}
+
+function normalizeOptionalRepositoryContext(
+  body
+) {
+  const owner =
+    cleanString(body?.owner);
+
+  const repo =
+    cleanString(body?.repo);
+
+  const branch =
+    cleanString(body?.branch);
+
+  if (!owner || !repo) {
+    return null;
+  }
+
+  return {
+    owner,
+    repo,
+    branch:
+      branch || "main"
+  };
+}
+
+function normalizeChatIntent(
+  value
+) {
+  const intent =
+    cleanString(value)
+      .toLowerCase()
+      .replace(/[\s_-]+/g, "");
+
+  if (
+    intent === "conversation" ||
+    intent === "chat" ||
+    intent === "casual"
+  ) {
+    return "conversation";
+  }
+
+  if (
+    intent === "discussion" ||
+    intent === "discuss"
+  ) {
+    return "discussion";
+  }
+
+  if (
+    intent === "planning" ||
+    intent === "plan"
+  ) {
+    return "planning";
+  }
+
+  if (
+    intent === "review" ||
+    intent === "codereview"
+  ) {
+    return "review";
+  }
+
+  if (
+    intent === "inspection" ||
+    intent === "inspect"
+  ) {
+    return "inspection";
+  }
+
+  if (
+    intent === "analyze" ||
+    intent === "analysis"
+  ) {
+    return "analyze";
+  }
+
+  if (
+    intent === "coding" ||
+    intent === "code"
+  ) {
+    return "coding";
+  }
+
+  if (
+    intent === "execution" ||
+    intent === "execute"
+  ) {
+    return "execution";
+  }
+
+  return "conversation";
+}
+
+function normalizeChatResult(
+  value,
+  fallbackMessage
+) {
+  const object =
+    value &&
+    typeof value === "object"
+      ? value
+      : {};
+
+  const intent =
+    normalizeChatIntent(
+      object.intent
     );
-  }
 
-  const message =
-    cleanString(body.message);
-
-  if (!message) {
-    return badRequest(
-      response,
-      "Message is required."
+  const response =
+    cleanString(
+      object.response ??
+      object.answer ??
+      object.message ??
+      object.text
+    ) ||
+    buildFallbackChatResponse(
+      intent,
+      fallbackMessage
     );
+
+  return {
+    intent,
+    response,
+    requiresRepository:
+      object.requiresRepository === true ||
+      intent === "review" ||
+      intent === "inspection" ||
+      intent === "analyze" ||
+      intent === "coding" ||
+      intent === "execution",
+    execute:
+      object.execute === true ||
+      intent === "execution" ||
+      intent === "coding"
+  };
+}
+
+function buildFallbackChatResponse(
+  intent,
+  message
+) {
+  if (
+    intent === "review" ||
+    intent === "inspection" ||
+    intent === "analyze"
+  ) {
+    return "Theek hai. Main repository inspect karke issue aur improvements identify karunga.";
   }
 
+  if (
+    intent === "coding" ||
+    intent === "execution"
+  ) {
+    return "Theek hai. Main is task ko coding workflow mein le ja raha hoon.";
+  }
+
+  if (intent === "planning") {
+    return "Theek hai. Pehle approach aur architecture discuss karte hain.";
+  }
+
+  return "Theek hai. Batao kis cheez par baat karni hai.";
+}
+
+function buildChatPrompt({
+  message,
+  history,
+  repository
+}) {
+  const historyText =
+    history.length > 0
+      ? history
+          .map(
+            (item) =>
+              `${item.role === "model" ? "ASSISTANT" : "USER"}: ${item.text}`
+          )
+          .join("\n")
+      : "(no previous conversation)";
+
+  const repositoryText =
+    repository
+      ? [
+          `Repository: ${repository.owner}/${repository.repo}`,
+          `Branch: ${repository.branch}`
+        ].join("\n")
+      : "(no repository context selected)";
+
+  return `
+You are LD76 Code Agent.
+
+Your job is to behave like a natural AI assistant first and a coding agent only when the user clearly asks for coding work.
+
+Current conversation:
+${historyText}
+
+Repository context:
+${repositoryText}
+
+Current user message:
+${message}
+
+Classify the user's CURRENT intent semantically.
+
+Allowed intents:
+- conversation
+- discussion
+- planning
+- review
+- inspection
+- analyze
+- coding
+- execution
+
+Routing rules:
+
+1. conversation
+Use for greetings, casual conversation, general questions, explanations, or normal chat.
+
+2. discussion
+Use when the user is discussing an idea, asking whether something is possible, comparing approaches, or exploring a concept.
+Do NOT start coding.
+
+3. planning
+Use when the user wants architecture, roadmap, implementation strategy, phases, file structure, or recommendations.
+Do NOT modify code merely because a plan is being discussed.
+
+4. review
+Use when the user asks to inspect/review existing code and report bugs, weaknesses, quality problems, or improvements.
+Review is READ-ONLY unless the user explicitly asks to fix or implement something.
+
+5. inspection
+Use for requests to look at repository files/code and explain what exists or how it works.
+READ-ONLY.
+
+6. analyze
+Use for repository/code analysis where the user wants findings rather than modifications.
+READ-ONLY.
+
+7. coding
+Use ONLY when the user clearly instructs the agent to make a code change.
+Examples include:
+- fix this
+- implement this
+- add this feature
+- change this code
+- create this file
+- update this file
+- remove this
+- apply the changes
+- make the discussed plan
+- do the task
+A coding request can depend on previous planning messages.
+
+8. execution
+Use when the user clearly confirms or explicitly asks to execute/apply/finalize an already discussed coding task.
+
+IMPORTANT:
+- Do not classify a question about coding as coding.
+- Do not classify a plan as coding.
+- Do not classify "can we build X?" as coding.
+- Do not classify "what do you think about X?" as coding.
+- Do not classify "look at this code and tell me what's wrong" as coding.
+- "Fix it", "implement it", "do it", "apply it", "make the changes" are explicit execution instructions when the conversation establishes what needs to be done.
+- Use conversation history to understand references such as "yes do it", "make that", "the above", or "implement this".
+- If intent is ambiguous, prefer discussion or planning rather than coding.
+- Never invent repository facts.
+- Normal conversation should work without GitHub.
+
+The response must be natural and directly useful to the user.
+Do not respond with a coding plan unless the user asked for one.
+Do not mention this routing system.
+
+Return ONLY valid JSON:
+{
+  "intent": "conversation|discussion|planning|review|inspection|analyze|coding|execution",
+  "response": "natural assistant response",
+  "requiresRepository": true,
+  "execute": false
+}
+
+Set requiresRepository=true for review, inspection, analyze, coding and execution.
+Set execute=true ONLY for coding or execution when the user has actually requested implementation/execution.
+`;
+}
+
+/* =========================================================
+   PROMPTS
+========================================================= */
+
+function buildPlanPrompt({
+  message,
+  context,
+  tree,
+  files,
+  history = []
+}) {
+  return `
+You are the planning engine of LD76 Code Agent.
+
+The user has explicitly requested a repository coding task.
+
+Conversation history:
+${buildHistoryText(history)}
+
+Current request:
+${message}
+
+Repository:
+${context.owner}/${context.repo}
+Branch:
+${context.branch}
+
+Repository tree:
+${JSON.stringify(tree, null, 2)}
+
+Relevant files:
+${formatFiles(files)}
+
+Create a precise implementation plan.
+
+Rules:
+- Only plan actual changes required by the request.
+- Do not invent files or APIs.
+- Existing files must be inspected before editing.
+- Preserve existing architecture unless the requested task requires otherwise.
+- Never expose or modify secrets.
+- Do not generate changes for ordinary discussion.
+- Paths must be repository-relative.
+- For an existing file, operation must be "update".
+- For a new file, operation must be "create".
+- For removal, operation must be "delete".
+- Keep the change set minimal.
+- Include verification steps.
+
+Return ONLY valid JSON:
+{
+  "summary": "short summary",
+  "analysis": "technical analysis",
+  "changes": [
+    {
+      "path": "path/to/file",
+      "operation": "update|create|delete",
+      "reason": "why this file changes"
+    }
+  ],
+  "verification": [
+    "verification step"
+  ],
+  "risk": "low|medium|high"
+}
+`;
+}
+
+function buildChangesPrompt({
+  message,
+  context,
+  plan,
+  tree,
+  files,
+  history = []
+}) {
+  return `
+You are the implementation engine of LD76 Code Agent.
+
+The user has explicitly authorized implementation.
+
+Conversation history:
+${buildHistoryText(history)}
+
+Original request:
+${message}
+
+Repository:
+${context.owner}/${context.repo}
+Branch:
+${context.branch}
+
+Approved implementation plan:
+${JSON.stringify(plan, null, 2)}
+
+Repository tree:
+${JSON.stringify(tree, null, 2)}
+
+Files:
+${formatFiles(files)}
+
+Generate the exact repository changes.
+
+Rules:
+- Return complete file contents for every create/update operation.
+- Never return partial file contents.
+- Never use placeholders.
+- Never use mock implementations.
+- Never use "...", "TODO", or omitted sections in code.
+- Preserve unrelated existing code.
+- Do not modify files outside the approved plan.
+- Do not expose secrets.
+- Existing files were supplied as context; update them accurately.
+- Delete operations must not include content.
+- Keep changes production-ready.
+- Ensure imports and function references remain valid.
+- Respect the existing JavaScript architecture.
+- Do not create unnecessary files.
+
+Return ONLY valid JSON:
+{
+  "summary": "short implementation summary",
+  "changes": [
+    {
+      "path": "path/to/file",
+      "operation": "update|create|delete",
+      "content": "complete UTF-8 file content for create/update"
+    }
+  ],
+  "verification": [
+    "verification step"
+  ]
+}
+`;
+}
+
+function buildHistoryText(
+  history
+) {
+  if (!Array.isArray(history) || history.length === 0) {
+    return "(no previous conversation)";
+  }
+
+  return history
+    .slice(-MAX_CHAT_HISTORY)
+    .map(
+      (item) =>
+        `${item.role === "model" ? "ASSISTANT" : "USER"}: ${item.text}`
+    )
+    .join("\n");
+}
+
+/* =========================================================
+   INSPECTION
+========================================================= */
+
+async function generateInspectionAnswer({
+  message,
+  context,
+  tree,
+  files,
+  history = []
+}) {
   const apiKey =
     process.env.LD76_GEMINI_API_KEY;
 
   if (!apiKey) {
-    return response.status(503).json({
-      ok: false,
-      error:
-        "Gemini API key is not configured."
-    });
+    throw createHttpError(
+      503,
+      "Gemini API key is not configured."
+    );
   }
 
   const selection =
     await chooseGeminiModel(
       apiKey,
-      body.model
+      null
     );
 
   const generated =
     await generateGeminiText({
       apiKey,
       selection,
-      prompt: message
+      prompt: `
+You are reviewing a GitHub repository for the user.
+
+Conversation:
+${buildHistoryText(history)}
+
+User request:
+${message}
+
+Repository:
+${context.owner}/${context.repo}
+Branch:
+${context.branch}
+
+Tree:
+${JSON.stringify(tree, null, 2)}
+
+Relevant files:
+${formatFiles(files)}
+
+Perform a READ-ONLY technical inspection.
+
+Do not propose automatic edits as if they were already made.
+Do not claim that anything was changed.
+Clearly distinguish:
+- confirmed problems
+- likely problems
+- improvements
+- strengths
+
+Give a concise but useful technical answer in natural language.
+`
     });
 
-  return response.status(200).json({
-    ok: true,
-    model: generated.model,
-    response: generated.text
-  });
+  return generated.text;
+}
+
+function isReadOnlyInspectionRequest(
+  message
+) {
+  const text =
+    cleanString(message)
+      .toLowerCase();
+
+  if (!text) {
+    return false;
+  }
+
+  const modificationPatterns = [
+    /\bfix\b/,
+    /\bimplement\b/,
+    /\bcreate\b/,
+    /\badd\b/,
+    /\bremove\b/,
+    /\bdelete\b/,
+    /\bupdate\b/,
+    /\bchange\b/,
+    /\bmodify\b/,
+    /\bapply\b/,
+    /\bexecute\b/,
+    /\bfinalize\b/,
+    /\bwrite\b/
+  ];
+
+  if (
+    modificationPatterns.some(
+      (pattern) =>
+        pattern.test(text)
+    )
+  ) {
+    return false;
+  }
+
+  const inspectionPatterns = [
+    /\breview\b/,
+    /\binspect\b/,
+    /\banaly[sz]e\b/,
+    /\banalysis\b/,
+    /\blook at\b/,
+    /\blook into\b/,
+    /\bcheck\b/,
+    /\bsee\b/,
+    /\bdekho\b/,
+    /\bdekh\b/,
+    /\bbatao issue\b/,
+    /\bissues\b/,
+    /\bproblems\b/,
+    /\bimprovements\b/,
+    /\bbug(s)?\b/,
+    /\bquality\b/
+  ];
+
+  return inspectionPatterns.some(
+    (pattern) =>
+      pattern.test(text)
+  );
 }
 
 /* =========================================================
-   GITHUB
+   GEMINI MODEL DISCOVERY
+========================================================= */
+
+async function chooseGeminiModel(
+  apiKey,
+  requestedModel
+) {
+  const models =
+    await listGeminiModels(
+      apiKey
+    );
+
+  const usable =
+    models.filter(
+      isUsableGeminiModel
+    );
+
+  if (usable.length === 0) {
+    throw createHttpError(
+      503,
+      "No usable Gemini models are available for this API key."
+    );
+  }
+
+  const requested =
+    cleanString(requestedModel);
+
+  if (requested) {
+    const found =
+      usable.find(
+        (model) =>
+          normalizeGeminiModelName(
+            model.name
+          ) ===
+          normalizeGeminiModelName(
+            requested
+          )
+      );
+
+    if (found) {
+      return {
+        model: normalizeGeminiModelName(
+          found.name
+        ),
+        source: "requested"
+      };
+    }
+  }
+
+  const ranked =
+    [...usable].sort(
+      compareGeminiModels
+    );
+
+  return {
+    model:
+      normalizeGeminiModelName(
+        ranked[0].name
+      ),
+    source: "auto"
+  };
+}
+
+async function listGeminiModels(
+  apiKey
+) {
+  const models = [];
+  let pageToken = "";
+
+  for (let page = 0; page < 10; page += 1) {
+    const url =
+      `${GEMINI_API}/models?pageSize=100` +
+      (
+        pageToken
+          ? `&pageToken=${encodeURIComponent(pageToken)}`
+          : ""
+      );
+
+    const data =
+      await callGeminiApi({
+        apiKey,
+        url,
+        method: "GET"
+      });
+
+    if (
+      Array.isArray(data?.models)
+    ) {
+      models.push(
+        ...data.models
+      );
+    }
+
+    pageToken =
+      cleanString(
+        data?.nextPageToken
+      );
+
+    if (!pageToken) {
+      break;
+    }
+  }
+
+  return models;
+}
+
+function isUsableGeminiModel(
+  model
+) {
+  if (
+    !model ||
+    typeof model !== "object"
+  ) {
+    return false;
+  }
+
+  const name =
+    normalizeGeminiModelName(
+      model.name
+    );
+
+  if (!name) {
+    return false;
+  }
+
+  const methods =
+    Array.isArray(
+      model.supportedGenerationMethods
+    )
+      ? model.supportedGenerationMethods
+      : [];
+
+  return (
+    methods.includes(
+      "generateContent"
+    ) &&
+    !name.toLowerCase().includes(
+      "embedding"
+    ) &&
+    !name.toLowerCase().includes(
+      "aqa"
+    )
+  );
+}
+
+function compareGeminiModels(
+  a,
+  b
+) {
+  return (
+    geminiModelScore(b) -
+    geminiModelScore(a)
+  );
+}
+
+function geminiModelScore(
+  model
+) {
+  const name =
+    normalizeGeminiModelName(
+      model?.name
+    ).toLowerCase();
+
+  let score = 0;
+
+  if (
+    name.includes("gemini-3")
+  ) {
+    score += 1000;
+  }
+
+  if (
+    name.includes("pro")
+  ) {
+    score += 300;
+  }
+
+  if (
+    name.includes("flash")
+  ) {
+    score += 200;
+  }
+
+  if (
+    name.includes("2.5")
+  ) {
+    score += 100;
+  }
+
+  if (
+    name.includes("2.0")
+  ) {
+    score += 50;
+  }
+
+  if (
+    name.includes("exp")
+  ) {
+    score -= 20;
+  }
+
+  if (
+    name.includes("preview")
+  ) {
+    score -= 10;
+  }
+
+  return score;
+}
+
+function normalizeGeminiModelName(
+  name
+) {
+  const value =
+    cleanString(name);
+
+  if (!value) {
+    return "";
+  }
+
+  return value.startsWith("models/")
+    ? value.slice(7)
+    : value;
+}
+
+/* =========================================================
+   GEMINI GENERATION
+========================================================= */
+
+async function generateGeminiJson({
+  apiKey,
+  selection,
+  prompt
+}) {
+  const generated =
+    await callGemini({
+      apiKey,
+      selection,
+      prompt,
+      responseMimeType:
+        "application/json"
+    });
+
+  const parsed =
+    parseJsonFromText(
+      generated.text
+    );
+
+  return {
+    model: generated.model,
+    text: generated.text,
+    value: parsed
+  };
+}
+
+async function generateGeminiText({
+  apiKey,
+  selection,
+  prompt
+}) {
+  return callGemini({
+    apiKey,
+    selection,
+    prompt
+  });
+}
+
+async function callGemini({
+  apiKey,
+  selection,
+  prompt,
+  responseMimeType
+}) {
+  const model =
+    normalizeGeminiModelName(
+      selection?.model
+    );
+
+  if (!model) {
+    throw createHttpError(
+      503,
+      "No Gemini model was selected."
+    );
+  }
+
+  const url =
+    `${GEMINI_API}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+
+  const generationConfig = {};
+
+  if (responseMimeType) {
+    generationConfig.responseMimeType =
+      responseMimeType;
+  }
+
+  const data =
+    await callGeminiApi({
+      apiKey,
+      url,
+      method: "POST",
+      body: {
+        contents: [
+          {
+            role: "user",
+            parts: [
+              {
+                text: prompt
+              }
+            ]
+          }
+        ],
+        generationConfig
+      }
+    });
+
+  const text =
+    extractGeminiText(data);
+
+  if (!text) {
+    throw createHttpError(
+      502,
+      "Gemini returned an empty response."
+    );
+  }
+
+  return {
+    model,
+    text
+  };
+}
+
+async function callGeminiApi({
+  apiKey,
+  url,
+  method = "GET",
+  body
+}) {
+  const headers = {
+    "Content-Type":
+      "application/json",
+    "x-goog-api-key":
+      apiKey
+  };
+
+  const options = {
+    method,
+    headers
+  };
+
+  if (body !== undefined) {
+    options.body =
+      JSON.stringify(body);
+  }
+
+  const result =
+    await fetch(
+      url,
+      options
+    );
+
+  const text =
+    await result.text();
+
+  let data = null;
+
+  try {
+    data =
+      text
+        ? JSON.parse(text)
+        : null;
+  } catch {
+    data = null;
+  }
+
+  if (!result.ok) {
+    const message =
+      cleanString(
+        data?.error?.message
+      ) ||
+      text ||
+      `Gemini API request failed with status ${result.status}.`;
+
+    throw createHttpError(
+      result.status >= 400 &&
+      result.status < 600
+        ? result.status
+        : 502,
+      message
+    );
+  }
+
+  return data;
+}
+
+function extractGeminiText(
+  data
+) {
+  const candidates =
+    Array.isArray(
+      data?.candidates
+    )
+      ? data.candidates
+      : [];
+
+  return candidates
+    .flatMap(
+      (candidate) =>
+        Array.isArray(
+          candidate?.content?.parts
+        )
+          ? candidate.content.parts
+          : []
+    )
+    .map(
+      (part) =>
+        typeof part?.text === "string"
+          ? part.text
+          : ""
+    )
+    .join("")
+    .trim();
+}
+
+function parseJsonFromText(
+  text
+) {
+  const raw =
+    cleanString(text);
+
+  if (!raw) {
+    throw createHttpError(
+      502,
+      "Gemini returned an empty JSON response."
+    );
+  }
+
+  try {
+    return JSON.parse(raw);
+  } catch {}
+
+  const fenced =
+    raw
+      .replace(
+        /^```(?:json)?/i,
+        ""
+      )
+      .replace(
+        /```$/i,
+        ""
+      )
+      .trim();
+
+  try {
+    return JSON.parse(fenced);
+  } catch {}
+
+  const first =
+    Math.min(
+      ...[
+        fenced.indexOf("{"),
+        fenced.indexOf("[")
+      ].filter(
+        (value) => value >= 0
+      )
+    );
+
+  if (
+    Number.isFinite(first)
+  ) {
+    const lastObject =
+      fenced.lastIndexOf("}");
+
+    const lastArray =
+      fenced.lastIndexOf("]");
+
+    const last =
+      Math.max(
+        lastObject,
+        lastArray
+      );
+
+    if (last > first) {
+      const candidate =
+        fenced.slice(
+          first,
+          last + 1
+        );
+
+      try {
+        return JSON.parse(
+          candidate
+        );
+      } catch {}
+    }
+  }
+
+  throw createHttpError(
+    502,
+    "Gemini returned invalid JSON."
+  );
+}
+
+/* =========================================================
+   GITHUB TREE / FILES
+========================================================= */
+
+async function loadRepositoryTree(
+  accessToken,
+  owner,
+  repo,
+  branch
+) {
+  const branchData =
+    await githubRequest(
+      accessToken,
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches/${encodeURIComponent(branch)}`
+    );
+
+  const sha =
+    cleanString(
+      branchData?.commit?.sha
+    );
+
+  if (!sha) {
+    throw createHttpError(
+      502,
+      "Unable to resolve repository branch."
+    );
+  }
+
+  const treeData =
+    await githubRequest(
+      accessToken,
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/trees/${encodeURIComponent(sha)}?recursive=1`
+    );
+
+  const tree =
+    Array.isArray(
+      treeData?.tree
+    )
+      ? treeData.tree
+      : [];
+
+  return {
+    sha,
+    truncated:
+      treeData?.truncated === true,
+    entries:
+      tree
+        .filter(
+          (entry) =>
+            entry &&
+            entry.type === "blob" &&
+            typeof entry.path === "string"
+        )
+        .slice(
+          0,
+          5000
+        )
+        .map(
+          (entry) => ({
+            path: entry.path,
+            sha: entry.sha,
+            size:
+              Number.isFinite(entry.size)
+                ? entry.size
+                : 0,
+            mode:
+              entry.mode || null
+          })
+        )
+  };
+}
+
+async function loadRelevantFiles(
+  accessToken,
+  owner,
+  repo,
+  branch,
+  tree,
+  limit
+) {
+  const entries =
+    Array.isArray(tree?.entries)
+      ? tree.entries
+      : [];
+
+  const ranked =
+    entries
+      .filter(
+        (entry) =>
+          entry.size <= MAX_FILE_SIZE &&
+          isRelevantTextFile(
+            entry.path
+          )
+      )
+      .sort(
+        compareFileRelevance
+      )
+      .slice(
+        0,
+        Math.max(
+          1,
+          limit || MAX_CONTEXT_FILES
+        )
+      );
+
+  const files = [];
+
+  for (
+    const entry of ranked
+  ) {
+    try {
+      const file =
+        await loadRepositoryFile(
+          accessToken,
+          owner,
+          repo,
+          branch,
+          entry.path
+        );
+
+      if (file) {
+        files.push(file);
+      }
+    } catch (error) {
+      console.warn(
+        "Unable to load relevant file:",
+        entry.path,
+        error?.message
+      );
+    }
+  }
+
+  return files;
+}
+
+async function loadPlannedFiles(
+  accessToken,
+  owner,
+  repo,
+  branch,
+  tree,
+  changes
+) {
+  const paths =
+    Array.isArray(changes)
+      ? changes
+          .map(
+            (change) =>
+              cleanString(
+                change?.path
+              )
+          )
+          .filter(Boolean)
+      : [];
+
+  const unique =
+    [...new Set(paths)];
+
+  const files = [];
+
+  for (
+    const path of unique
+  ) {
+    const entry =
+      tree.entries.find(
+        (item) =>
+          item.path === path
+      );
+
+    if (!entry) {
+      continue;
+    }
+
+    if (
+      entry.size > MAX_FILE_SIZE
+    ) {
+      throw createHttpError(
+        413,
+        `File is too large to inspect: ${path}`
+      );
+    }
+
+    const file =
+      await loadRepositoryFile(
+        accessToken,
+        owner,
+        repo,
+        branch,
+        path
+      );
+
+    if (file) {
+      files.push(file);
+    }
+  }
+
+  return files;
+}
+
+async function loadRepositoryFile(
+  accessToken,
+  owner,
+  repo,
+  branch,
+  path
+) {
+  const encodedPath =
+    path
+      .split("/")
+      .map(
+        encodeURIComponent
+      )
+      .join("/");
+
+  const data =
+    await githubRequest(
+      accessToken,
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encodedPath}?ref=${encodeURIComponent(branch)}`
+    );
+
+  if (
+    Array.isArray(data)
+  ) {
+    return null;
+  }
+
+  const content =
+    decodeBase64Utf8(
+      data?.content
+    );
+
+  if (
+    content.length >
+    MAX_FILE_SIZE
+  ) {
+    throw createHttpError(
+      413,
+      `File is too large to inspect: ${path}`
+    );
+  }
+
+  return {
+    path,
+    sha:
+      cleanString(
+        data?.sha
+      ),
+    size:
+      content.length,
+    content
+  };
+}
+
+function mergeFiles(
+  first,
+  second
+) {
+  const map =
+    new Map();
+
+  for (
+    const file of [
+      ...(Array.isArray(first)
+        ? first
+        : []),
+      ...(Array.isArray(second)
+        ? second
+        : [])
+    ]
+  ) {
+    if (
+      file &&
+      typeof file.path === "string"
+    ) {
+      map.set(
+        file.path,
+        file
+      );
+    }
+  }
+
+  return [
+    ...map.values()
+  ];
+}
+
+function formatFiles(
+  files
+) {
+  if (
+    !Array.isArray(files) ||
+    files.length === 0
+  ) {
+    return "(no file contents loaded)";
+  }
+
+  return files
+    .map(
+      (file) =>
+        `===== ${file.path} =====\n${file.content}`
+    )
+    .join("\n\n");
+}
+
+function isRelevantTextFile(
+  path
+) {
+  const value =
+    path.toLowerCase();
+
+  const blocked =
+    [
+      "node_modules/",
+      ".git/",
+      "dist/",
+      "build/",
+      ".next/",
+      "coverage/",
+      ".vercel/"
+    ];
+
+  if (
+    blocked.some(
+      (prefix) =>
+        value.includes(prefix)
+    )
+  ) {
+    return false;
+  }
+
+  const allowed =
+    [
+      ".js",
+      ".mjs",
+      ".cjs",
+      ".ts",
+      ".tsx",
+      ".jsx",
+      ".html",
+      ".css",
+      ".json",
+      ".md",
+      ".txt",
+      ".yml",
+      ".yaml",
+      ".env.example"
+    ];
+
+  return allowed.some(
+    (extension) =>
+      value.endsWith(extension)
+  );
+}
+
+function compareFileRelevance(
+  a,
+  b
+) {
+  return (
+    fileRelevanceScore(b.path) -
+    fileRelevanceScore(a.path)
+  );
+}
+
+function fileRelevanceScore(
+  path
+) {
+  const value =
+    path.toLowerCase();
+
+  let score = 0;
+
+  if (
+    value === "package.json"
+  ) {
+    score += 1000;
+  }
+
+  if (
+    value.includes("server/")
+  ) {
+    score += 300;
+  }
+
+  if (
+    value.includes("api/")
+  ) {
+    score += 250;
+  }
+
+  if (
+    value.includes("app.")
+  ) {
+    score += 200;
+  }
+
+  if (
+    value.includes("index.")
+  ) {
+    score += 150;
+  }
+
+  if (
+    value.includes("config")
+  ) {
+    score += 100;
+  }
+
+  if (
+    value.endsWith(".md")
+  ) {
+    score += 20;
+  }
+
+  score -=
+    path.split("/").length * 2;
+
+  return score;
+}
+
+/* =========================================================
+   GITHUB API
 ========================================================= */
 
 async function githubRequest(
@@ -974,22 +2490,17 @@ async function githubRequest(
             "application/vnd.github+json",
           Authorization:
             `Bearer ${accessToken}`,
-          "User-Agent":
-            "LD76-GitHub-Agent",
           "X-GitHub-Api-Version":
             GITHUB_API_VERSION,
-          ...(options.body
-            ? {
-                "Content-Type":
-                  "application/json"
-              }
-            : {})
+          "Content-Type":
+            "application/json"
         },
-        ...(options.body
-          ? {
-              body: options.body
-            }
-          : {})
+        body:
+          options.body !== undefined
+            ? JSON.stringify(
+                options.body
+              )
+            : undefined
       }
     );
 
@@ -1000,346 +2511,503 @@ async function githubRequest(
 
   try {
     data =
-      text ? JSON.parse(text) : null;
+      text
+        ? JSON.parse(text)
+        : null;
   } catch {
     data = null;
   }
 
   if (!result.ok) {
-    const error =
-      new Error(
-        data?.message ||
+    throw createHttpError(
+      result.status,
+      cleanString(
+        data?.message
+      ) ||
+        text ||
         "GitHub API request failed."
-      );
-
-    error.status =
-      result.status;
-
-    throw error;
+    );
   }
 
   return data;
 }
 
-async function githubGet(
-  accessToken,
-  path
-) {
-  return githubRequest(
-    accessToken,
-    path
-  );
-}
-
-async function loadRepositoryTree(
+async function getBranchHead(
   accessToken,
   owner,
   repo,
   branch
 ) {
   const data =
-    await githubGet(
+    await githubRequest(
       accessToken,
-      `/repos/${encodeURIComponent(
-        owner
-      )}/${encodeURIComponent(
-        repo
-      )}/git/trees/${encodeURIComponent(
-        branch
-      )}?recursive=1`
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches/${encodeURIComponent(branch)}`
     );
 
-  if (!Array.isArray(data?.tree)) {
-    throw new Error(
-      "GitHub returned an invalid repository tree."
-    );
-  }
-
-  return data.tree
-    .filter(
-      (entry) =>
-        typeof entry?.path === "string" &&
-        (
-          entry.type === "blob" ||
-          entry.type === "tree"
-        )
-    )
-    .map((entry) => ({
-      path: entry.path,
-      type: entry.type,
-      sha: entry.sha,
-      size:
-        Number.isInteger(entry.size)
-          ? entry.size
-          : null,
-      mode:
-        typeof entry.mode === "string"
-          ? entry.mode
-          : null
-    }));
+  return cleanString(
+    data?.commit?.sha
+  );
 }
 
-async function getFileAtRef({
+async function getCommit(
   accessToken,
   owner,
   repo,
-  path,
-  ref
-}) {
-  try {
-    const encoded =
-      path
-        .split("/")
-        .map(encodeURIComponent)
-        .join("/");
-
-    const data =
-      await githubGet(
-        accessToken,
-        `/repos/${encodeURIComponent(
-          owner
-        )}/${encodeURIComponent(
-          repo
-        )}/contents/${encoded}?ref=${encodeURIComponent(
-          ref
-        )}`
-      );
-
-    if (
-      data?.type !== "file" ||
-      typeof data.content !== "string"
-    ) {
-      throw new Error(
-        `GitHub path is not a readable file: ${path}`
-      );
-    }
-
-    const content =
-      Buffer.from(
-        data.content.replace(/\s/g, ""),
-        "base64"
-      ).toString("utf8");
-
-    return {
-      path,
-      sha: data.sha,
-      content,
-      size:
-        Number.isInteger(data.size)
-          ? data.size
-          : content.length
-    };
-  } catch (error) {
-    if (error.status === 404) {
-      return null;
-    }
-
-    throw error;
-  }
-}
-
-async function loadRelevantFiles(
-  accessToken,
-  owner,
-  repo,
-  branch,
-  tree,
-  limit
+  sha
 ) {
-  const preferred =
-    tree
-      .filter(
-        (entry) =>
-          entry.type === "blob"
-      )
-      .sort(
-        (a, b) =>
-          filePriority(b.path) -
-          filePriority(a.path)
-      )
-      .slice(0, limit);
-
-  const files = [];
-
-  for (const entry of preferred) {
-    if (
-      Number(entry.size) >
-      MAX_FILE_SIZE
-    ) {
-      continue;
-    }
-
-    const file =
-      await getFileAtRef({
-        accessToken,
-        owner,
-        repo,
-        path: entry.path,
-        ref: branch
-      });
-
-    if (file) {
-      files.push(file);
-    }
-  }
-
-  return files;
+  return githubRequest(
+    accessToken,
+    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits/${encodeURIComponent(sha)}`
+  );
 }
 
-async function loadPlannedFiles(
-  accessToken,
-  owner,
-  repo,
-  branch,
-  tree,
-  changes
+/* =========================================================
+   PLAN NORMALIZATION
+========================================================= */
+
+function normalizePlan(
+  value
+) {
+  const object =
+    value &&
+    typeof value === "object"
+      ? value
+      : {};
+
+  const changes =
+    Array.isArray(
+      object.changes
+    )
+      ? object.changes
+          .slice(
+            0,
+            MAX_CHANGES
+          )
+          .map(
+            normalizePlanChange
+          )
+          .filter(Boolean)
+      : [];
+
+  return {
+    summary:
+      cleanString(
+        object.summary
+      ) ||
+      "Implementation plan generated.",
+    analysis:
+      cleanString(
+        object.analysis
+      ),
+    changes,
+    verification:
+      Array.isArray(
+        object.verification
+      )
+        ? object.verification
+            .map(
+              cleanString
+            )
+            .filter(Boolean)
+            .slice(0, 30)
+        : [],
+    risk:
+      normalizeRisk(
+        object.risk
+      )
+  };
+}
+
+function normalizePlanChange(
+  change
+) {
+  if (
+    !change ||
+    typeof change !== "object"
+  ) {
+    return null;
+  }
+
+  const path =
+    normalizePath(
+      change.path
+    );
+
+  const operation =
+    normalizeOperation(
+      change.operation
+    );
+
+  if (
+    !path ||
+    !operation
+  ) {
+    return null;
+  }
+
+  return {
+    path,
+    operation,
+    reason:
+      cleanString(
+        change.reason
+      ) ||
+      "Required by the requested task."
+  };
+}
+
+function validatePlanAgainstTree(
+  plan,
+  tree
 ) {
   const entries =
+    Array.isArray(tree?.entries)
+      ? tree.entries
+      : [];
+
+  const paths =
+    new Set(
+      entries.map(
+        (entry) =>
+          entry.path
+      )
+    );
+
+  const changes =
+    Array.isArray(plan?.changes)
+      ? plan.changes
+          .filter(
+            (change) => {
+              if (
+                !change ||
+                !change.path
+              ) {
+                return false;
+              }
+
+              if (
+                change.operation ===
+                "create"
+              ) {
+                return !paths.has(
+                  change.path
+                );
+              }
+
+              if (
+                change.operation ===
+                "update"
+              ) {
+                return paths.has(
+                  change.path
+                );
+              }
+
+              if (
+                change.operation ===
+                "delete"
+              ) {
+                return paths.has(
+                  change.path
+                );
+              }
+
+              return false;
+            }
+          )
+          .slice(
+            0,
+            MAX_CHANGES
+          )
+      : [];
+
+  return {
+    summary:
+      plan?.summary ||
+      "Implementation plan generated.",
+    analysis:
+      plan?.analysis || "",
+    changes,
+    verification:
+      Array.isArray(
+        plan?.verification
+      )
+        ? plan.verification
+        : [],
+    risk:
+      normalizeRisk(
+        plan?.risk
+      )
+  };
+}
+
+/* =========================================================
+   CHANGE NORMALIZATION
+========================================================= */
+
+function validateChanges(
+  generatedChanges,
+  tree,
+  plannedChanges
+) {
+  if (
+    !Array.isArray(
+      generatedChanges
+    )
+  ) {
+    return [];
+  }
+
+  const planned =
     new Map(
-      tree.map(
-        (entry) => [
-          entry.path,
-          entry
+      (
+        Array.isArray(
+          plannedChanges
+        )
+          ? plannedChanges
+          : []
+      ).map(
+        (change) => [
+          change.path,
+          change.operation
         ]
       )
     );
 
-  const files = [];
+  const treePaths =
+    new Set(
+      (
+        Array.isArray(
+          tree?.entries
+        )
+          ? tree.entries
+          : []
+      ).map(
+        (entry) =>
+          entry.path
+      )
+    );
 
-  for (const change of changes) {
+  const changes = [];
+
+  for (
+    const raw of generatedChanges
+  ) {
     if (
-      change.operation === "create"
+      !raw ||
+      typeof raw !== "object"
     ) {
       continue;
     }
 
-    const entry =
-      entries.get(change.path);
-
-    if (!entry) {
-      throw new Error(
-        `Planned file does not exist in the current repository tree: ${change.path}`
+    const path =
+      normalizePath(
+        raw.path
       );
-    }
 
-    if (entry.type !== "blob") {
-      throw new Error(
-        `Planned path is not a regular file: ${change.path}`
+    const operation =
+      normalizeOperation(
+        raw.operation
       );
+
+    if (
+      !path ||
+      !operation
+    ) {
+      continue;
     }
 
     if (
-      Number(entry.size) >
-      MAX_FILE_SIZE
+      !planned.has(path) ||
+      planned.get(path) !== operation
     ) {
-      throw new Error(
-        `Planned file is too large to inspect safely: ${change.path}`
-      );
+      continue;
     }
 
-    const file =
-      await getFileAtRef({
-        accessToken,
-        owner,
-        repo,
-        path: change.path,
-        ref: branch
+    if (
+      operation === "create" &&
+      treePaths.has(path)
+    ) {
+      continue;
+    }
+
+    if (
+      operation !== "create" &&
+      !treePaths.has(path)
+    ) {
+      continue;
+    }
+
+    if (
+      operation !== "delete"
+    ) {
+      const content =
+        typeof raw.content === "string"
+          ? raw.content
+          : null;
+
+      if (
+        content === null
+      ) {
+        continue;
+      }
+
+      if (
+        content.length >
+        MAX_FILE_SIZE
+      ) {
+        continue;
+      }
+
+      changes.push({
+        path,
+        operation,
+        content
       });
 
-    if (!file) {
-      throw new Error(
-        `Could not read planned file: ${change.path}`
-      );
+      continue;
     }
 
-    if (
-      change.sha &&
-      change.sha !== file.sha
-    ) {
-      throw new Error(
-        `Planned file SHA is stale: ${change.path}`
-      );
-    }
-
-    files.push(file);
+    changes.push({
+      path,
+      operation
+    });
   }
 
-  return files;
+  return changes.slice(
+    0,
+    MAX_CHANGES
+  );
 }
 
-function mergeFiles(
-  primary,
-  secondary
+function normalizeChanges(
+  changes
 ) {
-  const map = new Map();
-
-  for (const file of [
-    ...primary,
-    ...secondary
-  ]) {
-    if (
-      file &&
-      typeof file.path === "string"
-    ) {
-      map.set(file.path, file);
-    }
+  if (
+    !Array.isArray(changes)
+  ) {
+    return null;
   }
 
-  return Array.from(map.values());
+  if (
+    changes.length >
+    MAX_CHANGES
+  ) {
+    return null;
+  }
+
+  const result = [];
+
+  for (
+    const raw of changes
+  ) {
+    if (
+      !raw ||
+      typeof raw !== "object"
+    ) {
+      return null;
+    }
+
+    const path =
+      normalizePath(
+        raw.path
+      );
+
+    const operation =
+      normalizeOperation(
+        raw.operation
+      );
+
+    if (
+      !path ||
+      !operation
+    ) {
+      return null;
+    }
+
+    if (
+      operation !== "delete" &&
+      typeof raw.content !== "string"
+    ) {
+      return null;
+    }
+
+    if (
+      typeof raw.content === "string" &&
+      raw.content.length >
+        MAX_FILE_SIZE
+    ) {
+      return null;
+    }
+
+    result.push({
+      path,
+      operation,
+      ...(operation !== "delete"
+        ? {
+            content:
+              raw.content
+          }
+        : {})
+    });
+  }
+
+  return result;
 }
 
-function filePriority(path) {
-  const lower =
-    path.toLowerCase();
-
+function normalizeChangesForVerification(
+  changes
+) {
   if (
-    lower === "package.json" ||
-    lower === "vercel.json"
+    !Array.isArray(changes)
   ) {
-    return 100;
+    return null;
   }
 
-  if (
-    lower === "readme.md" ||
-    lower === "plan.md"
-  ) {
-    return 90;
-  }
+  return changes
+    .map(
+      (change) => {
+        if (
+          !change ||
+          typeof change !== "object"
+        ) {
+          return null;
+        }
 
-  if (lower.includes("config")) {
-    return 70;
-  }
+        const path =
+          normalizePath(
+            change.path
+          );
 
-  if (
-    lower.includes("api/") ||
-    lower.includes("server/")
-  ) {
-    return 65;
-  }
+        const operation =
+          normalizeOperation(
+            change.operation
+          );
 
-  if (
-    lower.endsWith(".js") ||
-    lower.endsWith(".ts")
-  ) {
-    return 55;
-  }
+        if (
+          !path ||
+          !operation
+        ) {
+          return null;
+        }
 
-  if (lower.endsWith(".json")) {
-    return 50;
-  }
-
-  if (
-    lower.endsWith(".html") ||
-    lower.endsWith(".css")
-  ) {
-    return 45;
-  }
-
-  return 10;
+        return {
+          path,
+          operation,
+          ...(typeof change.content === "string"
+            ? {
+                content:
+                  change.content
+              }
+            : {})
+        };
+      }
+    )
+    .filter(Boolean);
 }
 
 /* =========================================================
-   APPLY PREFLIGHT
+   GIT DATA COMMIT
 ========================================================= */
 
 async function preflightChanges({
@@ -1349,13 +3017,23 @@ async function preflightChanges({
   branch,
   changes
 }) {
-  const headSha =
-    await getBranchHead(
+  const branchData =
+    await githubRequest(
       accessToken,
-      owner,
-      repo,
-      branch
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches/${encodeURIComponent(branch)}`
     );
+
+  const headSha =
+    cleanString(
+      branchData?.commit?.sha
+    );
+
+  if (!headSha) {
+    throw createHttpError(
+      502,
+      "Unable to resolve current branch head."
+    );
+  }
 
   const commit =
     await getCommit(
@@ -1366,26 +3044,78 @@ async function preflightChanges({
     );
 
   const baseTreeSha =
-    commit?.tree?.sha;
+    cleanString(
+      commit?.commit?.tree?.sha
+    );
 
-  if (!isValidSha(baseTreeSha)) {
-    throw new Error(
-      "Could not determine the current Git tree."
+  if (!baseTreeSha) {
+    throw createHttpError(
+      502,
+      "Unable to resolve current Git tree."
     );
   }
 
-  const treeEntries =
-    await loadRepositoryTree(
+  const currentTree =
+    await githubRequest(
       accessToken,
-      owner,
-      repo,
-      branch
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/trees/${encodeURIComponent(baseTreeSha)}?recursive=1`
     );
 
-  validateChanges(
-    changes,
-    treeEntries
-  );
+  const treeEntries =
+    Array.isArray(
+      currentTree?.tree
+    )
+      ? currentTree.tree
+      : [];
+
+  const currentMap =
+    new Map(
+      treeEntries
+        .filter(
+          (entry) =>
+            entry &&
+            entry.type === "blob" &&
+            typeof entry.path === "string"
+        )
+        .map(
+          (entry) => [
+            entry.path,
+            entry
+          ]
+        )
+    );
+
+  for (
+    const change of changes
+  ) {
+    const current =
+      currentMap.get(
+        change.path
+      );
+
+    if (
+      change.operation === "create" &&
+      current
+    ) {
+      throw createHttpError(
+        409,
+        `File already exists: ${change.path}`
+      );
+    }
+
+    if (
+      (
+        change.operation === "update" ||
+        change.operation === "delete"
+      ) &&
+      !current
+    ) {
+      throw createHttpError(
+        409,
+        `File no longer exists: ${change.path}`
+      );
+    }
+  }
 
   return {
     headSha,
@@ -1393,10 +3123,6 @@ async function preflightChanges({
     treeEntries
   };
 }
-
-/* =========================================================
-   GITHUB COMMIT
-========================================================= */
 
 async function applyGitDataCommit({
   accessToken,
@@ -1409,50 +3135,24 @@ async function applyGitDataCommit({
   changes,
   treeEntries
 }) {
-  const currentHead =
-    await getBranchHead(
-      accessToken,
-      owner,
-      repo,
-      branch
-    );
+  const blobs = [];
 
-  if (currentHead !== headSha) {
-    const error =
-      new Error(
-        "The selected branch changed before the GitHub write could be completed. Re-plan and request permission again."
-      );
-
-    error.status = 409;
-
-    throw error;
-  }
-
-  const entryMap =
-    new Map(
-      treeEntries.map(
-        (entry) => [
-          entry.path,
-          entry
-        ]
-      )
-    );
-
-  const tree = [];
-
-  for (const change of changes) {
-    const current =
-      entryMap.get(change.path);
-
+  for (
+    const change of changes
+  ) {
     if (
-      change.operation === "delete"
+      change.operation ===
+      "delete"
     ) {
-      tree.push({
-        path: change.path,
+      blobs.push({
+        path:
+          change.path,
         mode:
-          current?.mode || "100644",
-        type: "blob",
-        sha: null
+          "100644",
+        type:
+          "blob",
+        sha:
+          null
       });
 
       continue;
@@ -1461,1952 +3161,293 @@ async function applyGitDataCommit({
     const blob =
       await githubRequest(
         accessToken,
-        `/repos/${encodeURIComponent(
-          owner
-        )}/${encodeURIComponent(
-          repo
-        )}/git/blobs`,
+        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/blobs`,
         {
           method: "POST",
-          body: JSON.stringify({
-            content: change.content,
-            encoding: "utf-8"
-          })
-        }
-      );
-
-    if (!isValidSha(blob?.sha)) {
-      throw new Error(
-        `GitHub did not return a valid blob SHA for ${change.path}.`
-      );
-    }
-
-    tree.push({
-      path: change.path,
-      mode:
-        current?.mode || "100644",
-      type: "blob",
-      sha: blob.sha
-    });
-  }
-
-  const newTree =
-    await githubRequest(
-      accessToken,
-      `/repos/${encodeURIComponent(
-        owner
-      )}/${encodeURIComponent(
-        repo
-      )}/git/trees`,
-      {
-        method: "POST",
-        body: JSON.stringify({
-          base_tree: baseTreeSha,
-          tree
-        })
-      }
-    );
-
-  if (!isValidSha(newTree?.sha)) {
-    throw new Error(
-      "GitHub did not return a valid new tree."
-    );
-  }
-
-  const newCommit =
-    await githubRequest(
-      accessToken,
-      `/repos/${encodeURIComponent(
-        owner
-      )}/${encodeURIComponent(
-        repo
-      )}/git/commits`,
-      {
-        method: "POST",
-        body: JSON.stringify({
-          message,
-          tree: newTree.sha,
-          parents: [headSha]
-        })
-      }
-    );
-
-  if (!isValidSha(newCommit?.sha)) {
-    throw new Error(
-      "GitHub did not return a valid new commit."
-    );
-  }
-
-  const updated =
-    await githubRequest(
-      accessToken,
-      `/repos/${encodeURIComponent(
-        owner
-      )}/${encodeURIComponent(
-        repo
-      )}/git/refs/heads/${encodeURIComponent(
-        branch
-      )}`,
-      {
-        method: "PATCH",
-        body: JSON.stringify({
-          sha: newCommit.sha,
-          force: false
-        })
-      }
-    );
-
-  if (
-    updated?.object?.sha !==
-    newCommit.sha
-  ) {
-    throw new Error(
-      "GitHub branch update could not be confirmed."
-    );
-  }
-
-  return {
-    sha: newCommit.sha,
-    message
-  };
-}
-
-/* =========================================================
-   PERMISSION VALIDATION
-========================================================= */
-
-async function validatePermission(
-  request,
-  context,
-  changes
-) {
-  const permission =
-    parsePermissionCookie(request);
-
-  if (!permission) {
-    return {
-      ok: false,
-      status: 403,
-      error:
-        "No valid agent permission is available."
-    };
-  }
-
-  if (
-    !permission.token ||
-    !permission.mode
-  ) {
-    return {
-      ok: false,
-      status: 403,
-      error:
-        "Agent permission token is incomplete."
-    };
-  }
-
-  if (
-    !Number.isFinite(
-      permission.expiresAt
-    ) ||
-    permission.expiresAt <= Date.now()
-  ) {
-    return {
-      ok: false,
-      status: 403,
-      expired: true,
-      error:
-        "Agent permission has expired."
-    };
-  }
-
-  if (
-    permission.owner !== context.owner ||
-    permission.repo !== context.repo ||
-    permission.branch !== context.branch
-  ) {
-    return {
-      ok: false,
-      status: 403,
-      error:
-        "Agent permission does not match the selected repository or branch."
-    };
-  }
-
-  if (
-    permission.mode !== "allow_once" &&
-    permission.mode !== "allow_for_task"
-  ) {
-    return {
-      ok: false,
-      status: 403,
-      error:
-        "Agent permission does not allow writing."
-    };
-  }
-
-  const normalized =
-    normalizeChanges(changes);
-
-  if (
-    !normalized ||
-    normalized.length === 0
-  ) {
-    return {
-      ok: false,
-      status: 403,
-      error:
-        "The requested change set is invalid."
-    };
-  }
-
-  const changesHash =
-    await hashChanges(normalized);
-
-  if (
-    changesHash !==
-    permission.changesHash
-  ) {
-    return {
-      ok: false,
-      status: 403,
-      error:
-        "The approved change set does not match the requested change set."
-    };
-  }
-
-  const parsed =
-    parsePermissionToken(
-      permission.token
-    );
-
-  if (!parsed) {
-    return {
-      ok: false,
-      status: 403,
-      error:
-        "Agent permission token is invalid."
-    };
-  }
-
-  const secret =
-    process.env.LD76_AGENT_PERMISSION_SECRET;
-
-  if (!secret) {
-    return {
-      ok: false,
-      status: 503,
-      error:
-        "Agent permission secret is not configured."
-    };
-  }
-
-  const payload =
-    buildPermissionPayload({
-      id: parsed.id,
-      mode: permission.mode,
-      owner: context.owner,
-      repo: context.repo,
-      branch: context.branch,
-      changesHash,
-      expiresAt: permission.expiresAt
-    });
-
-  const valid =
-    await verifySignature(
-      secret,
-      payload,
-      parsed.signature
-    );
-
-  if (!valid) {
-    return {
-      ok: false,
-      status: 403,
-      error:
-        "Agent permission signature is invalid."
-    };
-  }
-
-  return {
-    ok: true,
-    mode: permission.mode
-  };
-}
-
-/* =========================================================
-   GEMINI
-========================================================= */
-
-async function listGeminiModels(
-  apiKey
-) {
-  const models = [];
-  let pageToken = "";
-
-  do {
-    const url =
-      new URL(
-        `${GEMINI_API}/models`
-      );
-
-    url.searchParams.set(
-      "key",
-      apiKey
-    );
-
-    url.searchParams.set(
-      "pageSize",
-      "1000"
-    );
-
-    if (pageToken) {
-      url.searchParams.set(
-        "pageToken",
-        pageToken
-      );
-    }
-
-    const result =
-      await fetch(url);
-
-    const text =
-      await result.text();
-
-    let data = null;
-
-    try {
-      data =
-        text ? JSON.parse(text) : null;
-    } catch {
-      data = null;
-    }
-
-    if (!result.ok) {
-      throw new Error(
-        data?.error?.message ||
-        "Could not load Gemini models."
-      );
-    }
-
-    if (Array.isArray(data?.models)) {
-      for (const model of data.models) {
-        if (
-          typeof model?.name !== "string" ||
-          !Array.isArray(
-            model.supportedGenerationMethods
-          ) ||
-          !model.supportedGenerationMethods.includes(
-            "generateContent"
-          )
-        ) {
-          continue;
-        }
-
-        models.push(model);
-      }
-    }
-
-    pageToken =
-      typeof data?.nextPageToken ===
-      "string"
-        ? data.nextPageToken
-        : "";
-  } while (pageToken);
-
-  return Array.from(
-    new Map(
-      models.map(
-        (model) => [
-          model.name,
-          model
-        ]
-      )
-    ).values()
-  );
-}
-
-function geminiModelScore(
-  model
-) {
-  const name =
-    `${model?.name || ""} ${
-      model?.displayName || ""
-    } ${
-      model?.description || ""
-    }`.toLowerCase();
-
-  let score = 0;
-
-  const inputLimit =
-    Number(model?.inputTokenLimit) || 0;
-
-  const outputLimit =
-    Number(model?.outputTokenLimit) || 0;
-
-  if (inputLimit > 0) {
-    score += 10;
-  }
-
-  if (outputLimit > 0) {
-    score += Math.min(
-      50,
-      Math.log2(
-        Math.max(
-          outputLimit,
-          1
-        )
-      )
-    );
-  }
-
-  /*
-   * Prefer general-purpose text-generation
-   * families without hard-coding any exact
-   * model name.
-   */
-  if (name.includes("flash")) {
-    score += 35;
-  }
-
-  if (name.includes("pro")) {
-    score += 30;
-  }
-
-  /*
-   * Some catalog entries can technically expose
-   * generateContent while not being ideal for an
-   * interactive coding agent.
-   */
-  if (
-    name.includes("embedding") ||
-    name.includes("aqa")
-  ) {
-    score -= 1000;
-  }
-
-  if (
-    name.includes("tts") ||
-    name.includes("speech")
-  ) {
-    score -= 500;
-  }
-
-  if (
-    name.includes("image")
-  ) {
-    score -= 500;
-  }
-
-  if (
-    name.includes("experimental") ||
-    name.includes("-exp")
-  ) {
-    score -= 25;
-  }
-
-  if (
-    name.includes("preview")
-  ) {
-    score -= 10;
-  }
-
-  return score;
-}
-
-function rankGeminiModels(
-  models
-) {
-  return [...models].sort(
-    (a, b) => {
-      const scoreA =
-        geminiModelScore(a);
-
-      const scoreB =
-        geminiModelScore(b);
-
-      if (scoreA !== scoreB) {
-        return scoreB - scoreA;
-      }
-
-      const outputA =
-        Number(a.outputTokenLimit) || 0;
-
-      const outputB =
-        Number(b.outputTokenLimit) || 0;
-
-      if (outputA !== outputB) {
-        return outputB - outputA;
-      }
-
-      const inputA =
-        Number(a.inputTokenLimit) || 0;
-
-      const inputB =
-        Number(b.inputTokenLimit) || 0;
-
-      if (inputA !== inputB) {
-        return inputB - inputA;
-      }
-
-      return String(a.name)
-        .localeCompare(
-          String(b.name)
-        );
-    }
-  );
-}
-
-async function chooseGeminiModel(
-  apiKey,
-  requestedModel
-) {
-  const models =
-    await listGeminiModels(apiKey);
-
-  if (!models.length) {
-    throw new Error(
-      "No Gemini model supporting generateContent is available."
-    );
-  }
-
-  if (
-    requestedModel &&
-    requestedModel !== "auto"
-  ) {
-    const selected =
-      models.find(
-        (model) =>
-          model.name === requestedModel
-      );
-
-    if (!selected) {
-      throw new Error(
-        "The selected Gemini model is not available for this API key."
-      );
-    }
-
-    return {
-      mode: "manual",
-      candidates: [
-        selected.name
-      ]
-    };
-  }
-
-  const ranked =
-    rankGeminiModels(models);
-
-  const candidates =
-    ranked
-      .map(
-        (model) =>
-          model.name
-      )
-      .filter(
-        (name) =>
-          typeof name === "string" &&
-          name.length > 0
-      );
-
-  if (!candidates.length) {
-    throw new Error(
-      "No usable Gemini model is available for Auto selection."
-    );
-  }
-
-  return {
-    mode: "auto",
-    candidates
-  };
-}
-
-function normalizeGeminiSelection(
-  selection
-) {
-  if (
-    typeof selection === "string" &&
-    selection
-  ) {
-    return {
-      mode: "manual",
-      candidates: [
-        selection
-      ]
-    };
-  }
-
-  if (
-    selection &&
-    typeof selection === "object" &&
-    Array.isArray(
-      selection.candidates
-    )
-  ) {
-    const candidates =
-      selection.candidates.filter(
-        (model) =>
-          typeof model === "string" &&
-          model.length > 0
-      );
-
-    if (candidates.length) {
-      return {
-        mode:
-          selection.mode === "auto"
-            ? "auto"
-            : "manual",
-        candidates
-      };
-    }
-  }
-
-  throw new Error(
-    "No valid Gemini model selection was provided."
-  );
-}
-
-async function generateGeminiJson({
-  apiKey,
-  selection,
-  prompt
-}) {
-  const normalized =
-    normalizeGeminiSelection(
-      selection
-    );
-
-  let lastError = null;
-
-  for (
-    const model of normalized.candidates
-  ) {
-    try {
-      const output =
-        await callGemini({
-          apiKey,
-          model,
-          prompt,
-          json: true
-        });
-
-      try {
-        const value =
-          parseGeminiJson(output);
-
-        return {
-          value,
-          model
-        };
-      } catch (error) {
-        lastError = new Error(
-          "Gemini returned invalid JSON."
-        );
-      }
-    } catch (error) {
-      lastError = error;
-
-      /*
-       * Some dynamically discovered models may
-       * support generateContent but reject the
-       * JSON response MIME configuration.
-       *
-       * Auto mode gets one compatibility retry
-       * without responseMimeType and then parses
-       * the returned JSON itself.
-       */
-      if (
-        normalized.mode === "auto" &&
-        isGeminiJsonConfigurationError(
-          error
-        )
-      ) {
-        try {
-          const output =
-            await callGemini({
-              apiKey,
-              model,
-              prompt,
-              json: false
-            });
-
-          const value =
-            parseGeminiJson(output);
-
-          return {
-            value,
-            model
-          };
-        } catch (fallbackError) {
-          lastError =
-            fallbackError;
-        }
-      }
-    }
-
-    /*
-     * Manual model selection preserves the
-     * previous behavior: do not silently switch
-     * to another model.
-     */
-    if (
-      normalized.mode !== "auto"
-    ) {
-      break;
-    }
-  }
-
-  throw (
-    lastError ||
-    new Error(
-      "All automatically selected Gemini models failed."
-    )
-  );
-}
-
-function isGeminiJsonConfigurationError(
-  error
-) {
-  const message =
-    String(
-      error?.message || ""
-    ).toLowerCase();
-
-  return (
-    message.includes(
-      "responsemimetype"
-    ) ||
-    message.includes(
-      "response mime"
-    ) ||
-    message.includes(
-      "response_mime_type"
-    ) ||
-    message.includes(
-      "json schema"
-    ) ||
-    message.includes(
-      "mime type"
-    ) ||
-    message.includes(
-      "unsupported"
-    ) ||
-    message.includes(
-      "invalid argument"
-    )
-  );
-}
-
-function parseGeminiJson(
-  output
-) {
-  const text =
-    String(output || "").trim();
-
-  try {
-    return JSON.parse(text);
-  } catch {}
-
-  const fenced =
-    text.match(
-      /```(?:json)?\s*([\s\S]*?)\s*```/i
-    );
-
-  if (fenced) {
-    return JSON.parse(
-      fenced[1]
-    );
-  }
-
-  const first =
-    text.indexOf("{");
-
-  const last =
-    text.lastIndexOf("}");
-
-  if (
-    first >= 0 &&
-    last > first
-  ) {
-    return JSON.parse(
-      text.slice(
-        first,
-        last + 1
-      )
-    );
-  }
-
-  throw new Error(
-    "No valid JSON object was found."
-  );
-}
-
-async function generateGeminiText({
-  apiKey,
-  selection,
-  prompt
-}) {
-  const normalized =
-    normalizeGeminiSelection(
-      selection
-    );
-
-  let lastError = null;
-
-  for (
-    const model of normalized.candidates
-  ) {
-    try {
-      const text =
-        await callGemini({
-          apiKey,
-          model,
-          prompt,
-          json: false
-        });
-
-      return {
-        text,
-        model
-      };
-    } catch (error) {
-      lastError = error;
-    }
-
-    /*
-     * Manual model selection preserves the
-     * selected model and does not silently fall
-     * back to another model.
-     */
-    if (
-      normalized.mode !== "auto"
-    ) {
-      break;
-    }
-  }
-
-  throw (
-    lastError ||
-    new Error(
-      "All automatically selected Gemini models failed."
-    )
-  );
-}
-
-async function callGemini({
-  apiKey,
-  model,
-  prompt,
-  json
-}) {
-  const modelId =
-    String(model || "").replace(
-      /^models\//,
-      ""
-    );
-
-  if (!modelId) {
-    throw new Error(
-      "Gemini model is missing."
-    );
-  }
-
-  const generationConfig = {
-    temperature:
-      json ? 0.1 : 0.2
-  };
-
-  if (json) {
-    generationConfig.responseMimeType =
-      "application/json";
-  }
-
-  const result =
-    await fetch(
-      `${GEMINI_API}/models/${encodeURIComponent(
-        modelId
-      )}:generateContent?key=${encodeURIComponent(
-        apiKey
-      )}`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type":
-            "application/json"
-        },
-        body: JSON.stringify({
-          contents: [
-            {
-              role: "user",
-              parts: [
-                {
-                  text: prompt
-                }
-              ]
-            }
-          ],
-          generationConfig
-        })
-      }
-    );
-
-  const text =
-    await result.text();
-
-  let data = null;
-
-  try {
-    data =
-      text ? JSON.parse(text) : null;
-  } catch {
-    data = null;
-  }
-
-  if (!result.ok) {
-    const error =
-      new Error(
-        data?.error?.message ||
-        "Gemini request failed."
-      );
-
-    error.status =
-      result.status;
-
-    throw error;
-  }
-
-  const output =
-    Array.isArray(
-      data?.candidates?.[0]
-        ?.content?.parts
-    )
-      ? data.candidates[0]
-          .content.parts
-          .filter(
-            (part) =>
-              typeof part?.text ===
-              "string"
-          )
-          .map(
-            (part) =>
-              part.text
-          )
-          .join("")
-      : "";
-
-  if (!output.trim()) {
-    throw new Error(
-      "Gemini returned an empty response."
-    );
-  }
-
-  return output.trim();
-}
-
-/* =========================================================
-   INSPECTION
-========================================================= */
-
-function isReadOnlyInspectionRequest(
-  message
-) {
-  const text =
-    message.toLowerCase();
-
-  const inspectionWords = [
-    "inspect",
-    "inspection",
-    "structure",
-    "project structure",
-    "repo structure",
-    "repository structure",
-    "files batao",
-    "files dekho",
-    "files read",
-    "analyze repository",
-    "analyse repository",
-    "repository analyze",
-    "repository analyse"
-  ];
-
-  const writeWords = [
-    "create",
-    "add",
-    "update",
-    "edit",
-    "modify",
-    "change",
-    "delete",
-    "remove",
-    "fix",
-    "replace",
-    "rename",
-    "implement",
-    "build",
-    "write",
-    "apply"
-  ];
-
-  const hasInspection =
-    inspectionWords.some(
-      (word) =>
-        text.includes(word)
-    );
-
-  const hasWrite =
-    writeWords.some(
-      (word) =>
-        text.includes(word)
-    );
-
-  return (
-    hasInspection &&
-    !hasWrite
-  );
-}
-
-async function generateInspectionAnswer({
-  message,
-  context,
-  tree,
-  files
-}) {
-  const apiKey =
-    process.env.LD76_GEMINI_API_KEY;
-
-  if (!apiKey) {
-    return buildLocalInspection(
-      context,
-      tree,
-      files
-    );
-  }
-
-  try {
-    const selection =
-      await chooseGeminiModel(
-        apiKey,
-        "auto"
-      );
-
-    const prompt = [
-      "You are the read-only repository inspector for LD76 Code Agent.",
-      "Do not propose or perform code changes.",
-      "Do not invent files.",
-      "Use only facts visible in the supplied repository tree and files.",
-      "",
-      `Repository: ${context.owner}/${context.repo}`,
-      `Branch: ${context.branch}`,
-      "",
-      "User request:",
-      message,
-      "",
-      "Repository tree:",
-      tree
-        .map(
-          (entry) =>
-            `${entry.type}: ${entry.path}`
-        )
-        .join("\n"),
-      "",
-      "Readable files:",
-      buildFileContext(files),
-      "",
-      "Return concise plain text.",
-      "Explain the project structure, important files, major responsibilities and deployment/configuration files.",
-      "Clearly state that no files were modified."
-    ].join("\n");
-
-    const generated =
-      await generateGeminiText({
-        apiKey,
-        selection,
-        prompt
-      });
-
-    if (
-      generated.text &&
-      generated.text.trim()
-    ) {
-      return generated.text.trim();
-    }
-  } catch (error) {
-    console.error(
-      "Inspection Gemini request failed:",
-      error
-    );
-  }
-
-  return buildLocalInspection(
-    context,
-    tree,
-    files
-  );
-}
-
-function buildLocalInspection(
-  context,
-  tree,
-  files
-) {
-  const directories =
-    new Set();
-
-  const fileEntries =
-    tree.filter(
-      (entry) =>
-        entry.type === "blob"
-    );
-
-  for (const entry of fileEntries) {
-    const parts =
-      entry.path.split("/");
-
-    if (parts.length > 1) {
-      directories.add(parts[0]);
-    }
-  }
-
-  const lines = [
-    `Repository: ${context.owner}/${context.repo}`,
-    `Branch: ${context.branch}`,
-    "",
-    `Files: ${fileEntries.length}`,
-    `Top-level directories: ${
-      directories.size
-        ? Array.from(
-            directories
-          ).sort().join(", ")
-        : "none"
-    }`,
-    "",
-    "Important files:"
-  ];
-
-  fileEntries
-    .sort(
-      (a, b) =>
-        filePriority(b.path) -
-        filePriority(a.path)
-    )
-    .slice(0, 20)
-    .forEach(
-      (entry) =>
-        lines.push(
-          `- ${entry.path}`
-        )
-    );
-
-  lines.push(
-    "",
-    `Readable files inspected: ${files.length}`,
-    "",
-    "No files were modified."
-  );
-
-  return lines.join("\n");
-}
-
-/* =========================================================
-   PROMPTS
-========================================================= */
-
-function buildPlanPrompt({
-  message,
-  context,
-  tree,
-  files
-}) {
-  return [
-    "You are the planning engine of LD76 Code Agent.",
-    "Work only from the supplied real GitHub repository context.",
-    "Do not invent files.",
-    "Do not claim that anything was written.",
-    "",
-    `Repository: ${context.owner}/${context.repo}`,
-    `Branch: ${context.branch}`,
-    "",
-    "User request:",
-    message,
-    "",
-    "Repository tree:",
-    tree
-      .map(
-        (entry) =>
-          `${entry.type}: ${entry.path}`
-      )
-      .join("\n"),
-    "",
-    "Relevant readable files:",
-    buildFileContext(files),
-    "",
-    "Return ONLY JSON:",
-    "{",
-    '  "summary": "short summary",',
-    '  "analysis": "what was inspected and why",',
-    '  "changes": [',
-    "    {",
-    '      "operation": "update|create|delete",',
-    '      "path": "exact repository path",',
-    '      "reason": "why"',
-    "    }",
-    "  ],",
-    '  "verification": ["specific verification step"],',
-    '  "risk": "short risk assessment"',
-    "}",
-    "",
-    "Rules:",
-    "1. Use only paths present in the tree for update/delete.",
-    "2. A create path must not already exist.",
-    "3. If no code change is needed, changes must be empty.",
-    "4. Do not include code in the plan.",
-    "5. Do not invent dependencies."
-  ].join("\n");
-}
-
-function buildChangesPrompt({
-  message,
-  context,
-  plan,
-  tree,
-  files
-}) {
-  return [
-    "You are the exact code-change engine of LD76 Code Agent.",
-    "The repository is real.",
-    "Generate complete file replacements only.",
-    "Do not perform GitHub writes.",
-    "Do not claim that changes were applied.",
-    "Do not invent repository files.",
-    "",
-    `Repository: ${context.owner}/${context.repo}`,
-    `Branch: ${context.branch}`,
-    "",
-    "User request:",
-    message,
-    "",
-    "Approved plan:",
-    JSON.stringify(
-      plan,
-      null,
-      2
-    ),
-    "",
-    "Repository tree:",
-    tree
-      .map(
-        (entry) =>
-          `${entry.type}: ${entry.path} ${entry.sha || ""}`
-      )
-      .join("\n"),
-    "",
-    "Current readable files:",
-    buildFileContext(files),
-    "",
-    "Return ONLY JSON:",
-    "{",
-    '  "summary": "short summary",',
-    '  "changes": [',
-    "    {",
-    '      "operation": "update|create|delete",',
-    '      "path": "exact path",',
-    '      "sha": "current SHA for update/delete, null for create",',
-    '      "content": "complete file content or null",',
-    '      "reason": "reason"',
-    "    }",
-    "  ],",
-    '  "verification": ["specific verification step"]',
-    "}",
-    "",
-    "Strict rules:",
-    "1. update content must be the COMPLETE replacement file.",
-    "2. create content must be the COMPLETE new file.",
-    "3. delete content must be null.",
-    "4. Never return partial snippets.",
-    "5. Never return markdown fences.",
-    "6. Update/delete SHA must exactly match the current tree.",
-    "7. Existing files must only be changed when their actual contents are supplied.",
-    "8. Never include secrets or credentials.",
-    "9. Keep unrelated files unchanged.",
-    "10. Return exactly the planned change paths and operations.",
-    "11. If the plan says no change, return an empty changes array."
-  ].join("\n");
-}
-
-function buildFileContext(files) {
-  return files
-    .map(
-      (file) =>
-        [
-          `--- FILE: ${file.path} ---`,
-          file.content,
-          "--- END FILE ---"
-        ].join("\n")
-    )
-    .join("\n\n");
-}
-
-/* =========================================================
-   NORMALIZATION
-========================================================= */
-
-function normalizePlan(value) {
-  const plan =
-    value &&
-    typeof value === "object"
-      ? value
-      : {};
-
-  return {
-    summary:
-      typeof plan.summary === "string"
-        ? plan.summary
-        : "No summary provided.",
-    analysis:
-      typeof plan.analysis === "string"
-        ? plan.analysis
-        : "",
-    changes:
-      Array.isArray(plan.changes)
-        ? plan.changes
-        : [],
-    verification:
-      Array.isArray(plan.verification)
-        ? plan.verification
-        : [],
-    risk:
-      typeof plan.risk === "string"
-        ? plan.risk
-        : "unknown"
-  };
-}
-
-function validatePlanAgainstTree(
-  plan,
-  tree
-) {
-  const normalized =
-    normalizePlan(plan);
-
-  const changes =
-    normalizePlanChanges(
-      normalized.changes
-    );
-
-  const entries =
-    new Map(
-      tree.map(
-        (entry) => [
-          entry.path,
-          entry
-        ]
-      )
-    );
-
-  for (const change of changes) {
-    const entry =
-      entries.get(change.path);
-
-    if (
-      change.operation ===
-      "update"
-    ) {
-      if (!entry) {
-        throw new Error(
-          `Plan tries to update a missing path: ${change.path}`
-        );
-      }
-
-      if (entry.type !== "blob") {
-        throw new Error(
-          `Plan tries to update a non-file path: ${change.path}`
-        );
-      }
-    }
-
-    if (
-      change.operation ===
-      "delete"
-    ) {
-      if (!entry) {
-        throw new Error(
-          `Plan tries to delete a missing path: ${change.path}`
-        );
-      }
-
-      if (entry.type !== "blob") {
-        throw new Error(
-          `Plan tries to delete a non-file path: ${change.path}`
-        );
-      }
-    }
-
-    if (
-      change.operation ===
-      "create"
-    ) {
-      if (entry) {
-        throw new Error(
-          `Plan tries to create an existing path: ${change.path}`
-        );
-      }
-    }
-  }
-
-  return {
-    ...normalized,
-    changes
-  };
-}
-
-function normalizePlanChanges(
-  changes
-) {
-  if (!Array.isArray(changes)) {
-    throw new Error(
-      "Gemini returned an invalid plan change list."
-    );
-  }
-
-  if (
-    changes.length >
-    MAX_CHANGES
-  ) {
-    throw new Error(
-      "The plan contains too many changes."
-    );
-  }
-
-  const result = [];
-  const seen = new Set();
-
-  for (const change of changes) {
-    if (
-      !change ||
-      typeof change !== "object"
-    ) {
-      throw new Error(
-        "The plan contains an invalid change."
-      );
-    }
-
-    const operation =
-      change.operation;
-
-    const path =
-      cleanString(change.path);
-
-    if (
-      ![
-        "update",
-        "create",
-        "delete"
-      ].includes(operation) ||
-      !isValidPath(path) ||
-      seen.has(path)
-    ) {
-      throw new Error(
-        `Invalid plan change: ${path || "unknown path"}`
-      );
-    }
-
-    seen.add(path);
-
-    result.push({
-      operation,
-      path,
-      reason:
-        typeof change.reason === "string"
-          ? change.reason
-          : ""
-    });
-  }
-
-  return result;
-}
-
-function normalizeChanges(changes) {
-  if (!Array.isArray(changes)) {
-    return null;
-  }
-
-  if (
-    changes.length >
-    MAX_CHANGES
-  ) {
-    return null;
-  }
-
-  const normalized = [];
-  const seen = new Set();
-
-  for (const change of changes) {
-    if (
-      !change ||
-      typeof change !== "object"
-    ) {
-      return null;
-    }
-
-    const operation =
-      change.operation;
-
-    const path =
-      cleanString(change.path);
-
-    if (
-      ![
-        "update",
-        "create",
-        "delete"
-      ].includes(operation) ||
-      !isValidPath(path) ||
-      seen.has(path)
-    ) {
-      return null;
-    }
-
-    seen.add(path);
-
-    const sha =
-      change.sha === null ||
-      typeof change.sha === "undefined"
-        ? null
-        : change.sha;
-
-    if (
-      sha !== null &&
-      !isValidSha(sha)
-    ) {
-      return null;
-    }
-
-    if (
-      (
-        operation === "update" ||
-        operation === "delete"
-      ) &&
-      !sha
-    ) {
-      return null;
-    }
-
-    if (
-      operation === "create" &&
-      sha !== null
-    ) {
-      return null;
-    }
-
-    let content = null;
-
-    if (
-      operation === "update" ||
-      operation === "create"
-    ) {
-      if (
-        typeof change.content !== "string" ||
-        change.content.length >
-          MAX_FILE_SIZE
-      ) {
-        return null;
-      }
-
-      content =
-        change.content;
-    }
-
-    if (
-      operation === "delete" &&
-      change.content !== null &&
-      typeof change.content !== "undefined"
-    ) {
-      return null;
-    }
-
-    normalized.push({
-      operation,
-      path,
-      sha,
-      content,
-      reason:
-        typeof change.reason === "string"
-          ? change.reason
-          : ""
-    });
-  }
-
-  return normalized;
-}
-
-function validateChanges(
-  changes,
-  tree,
-  plannedChanges = null
-) {
-  const normalized =
-    normalizeChanges(changes);
-
-  if (!normalized) {
-    throw new Error(
-      "Gemini returned an invalid change set."
-    );
-  }
-
-  const existing =
-    new Map(
-      tree.map(
-        (entry) => [
-          entry.path,
-          entry
-        ]
-      )
-    );
-
-  if (plannedChanges) {
-    const planned =
-      normalizePlanChanges(
-        plannedChanges
-      );
-
-    if (
-      normalized.length !==
-      planned.length
-    ) {
-      throw new Error(
-        "Generated changes do not exactly match the approved plan."
-      );
-    }
-
-    const plannedMap =
-      new Map(
-        planned.map(
-          (change) => [
-            change.path,
-            change.operation
-          ]
-        )
-      );
-
-    for (const change of normalized) {
-      if (
-        plannedMap.get(
-          change.path
-        ) !== change.operation
-      ) {
-        throw new Error(
-          `Generated change is not allowed by the plan: ${change.path}`
-        );
-      }
-    }
-  }
-
-  for (const change of normalized) {
-    const current =
-      existing.get(change.path);
-
-    if (
-      change.operation ===
-      "update"
-    ) {
-      if (!current) {
-        throw new Error(
-          `Cannot update non-existing path: ${change.path}`
-        );
-      }
-
-      if (current.type !== "blob") {
-        throw new Error(
-          `Cannot update non-file path: ${change.path}`
-        );
-      }
-
-      if (
-        change.sha !==
-        current.sha
-      ) {
-        throw new Error(
-          `File SHA mismatch in proposed update: ${change.path}`
-        );
-      }
-    }
-
-    if (
-      change.operation ===
-      "create"
-    ) {
-      if (current) {
-        throw new Error(
-          `Cannot create existing path: ${change.path}`
-        );
-      }
-    }
-
-    if (
-      change.operation ===
-      "delete"
-    ) {
-      if (!current) {
-        throw new Error(
-          `Cannot delete non-existing path: ${change.path}`
-        );
-      }
-
-      if (current.type !== "blob") {
-        throw new Error(
-          `Cannot delete non-file path: ${change.path}`
-        );
-      }
-
-      if (
-        change.sha !==
-        current.sha
-      ) {
-        throw new Error(
-          `File SHA mismatch in proposed delete: ${change.path}`
-        );
-      }
-    }
-  }
-
-  return normalized;
-}
-
-function normalizeChangesForVerification(
-  changes
-) {
-  if (!Array.isArray(changes)) {
-    return null;
-  }
-
-  if (
-    changes.length === 0 ||
-    changes.length > MAX_CHANGES
-  ) {
-    return null;
-  }
-
-  const normalized = [];
-  const seen = new Set();
-
-  for (const change of changes) {
-    if (
-      !change ||
-      typeof change !== "object"
-    ) {
-      return null;
-    }
-
-    const operation =
-      change.operation;
-
-    const path =
-      cleanString(change.path);
-
-    if (
-      ![
-        "create",
-        "update",
-        "delete"
-      ].includes(operation) ||
-      !isValidPath(path) ||
-      seen.has(path)
-    ) {
-      return null;
-    }
-
-    seen.add(path);
-
-    if (
-      operation !== "delete" &&
-      (
-        typeof change.content !== "string" ||
-        change.content.length >
-          MAX_FILE_SIZE
-      )
-    ) {
-      return null;
-    }
-
-    normalized.push({
-      operation,
-      path,
-      content:
-        operation === "delete"
-          ? null
-          : change.content
-    });
-  }
-
-  return normalized;
-}
-
-/* =========================================================
-   PERMISSION CRYPTO
-========================================================= */
-
-async function hashChanges(
-  changes
-) {
-  const canonical =
-    JSON.stringify(
-      changes
-        .map(
-          (change) => ({
-            operation:
-              change.operation,
-            path:
-              change.path,
-            sha:
-              change.sha || null,
+          body: {
             content:
-              change.content ?? null
-          })
-        )
-        .sort(
-          (a, b) =>
-            a.path.localeCompare(
-              b.path
-            )
-        )
-    );
+              change.content,
+            encoding:
+              "utf-8"
+          }
+        }
+      );
 
-  const digest =
-    await crypto.subtle.digest(
-      "SHA-256",
-      new TextEncoder().encode(
-        canonical
-      )
-    );
+    if (!blob?.sha) {
+      throw createHttpError(
+        502,
+        `Unable to create Git blob: ${change.path}`
+      );
+    }
 
-  return Array.from(
-    new Uint8Array(digest)
-  )
-    .map(
-      (byte) =>
-        byte
-          .toString(16)
-          .padStart(2, "0")
-    )
-    .join("");
-}
+    blobs.push({
+      path:
+        change.path,
+      mode:
+        "100644",
+      type:
+        "blob",
+      sha:
+        blob.sha
+    });
+  }
 
-async function createSignature(
-  secret,
-  value
-) {
-  const key =
-    await crypto.subtle.importKey(
-      "raw",
-      new TextEncoder().encode(secret),
+  const tree =
+    await githubRequest(
+      accessToken,
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/trees`,
       {
-        name: "HMAC",
-        hash: "SHA-256"
-      },
-      false,
-      ["sign"]
+        method: "POST",
+        body: {
+          base_tree:
+            baseTreeSha,
+          tree: [
+            ...treeEntries
+              .filter(
+                (entry) =>
+                  !changes.some(
+                    (change) =>
+                      change.path ===
+                      entry.path
+                  )
+              )
+              .map(
+                (entry) => ({
+                  path:
+                    entry.path,
+                  mode:
+                    entry.mode ||
+                    "100644",
+                  type:
+                    "blob",
+                  sha:
+                    entry.sha
+                })
+              ),
+            ...blobs
+          ]
+        }
+      }
     );
 
-  const signature =
-    await crypto.subtle.sign(
-      "HMAC",
-      key,
-      new TextEncoder().encode(value)
+  if (!tree?.sha) {
+    throw createHttpError(
+      502,
+      "Unable to create Git tree."
+    );
+  }
+
+  const commit =
+    await githubRequest(
+      accessToken,
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/commits`,
+      {
+        method: "POST",
+        body: {
+          message,
+          tree:
+            tree.sha,
+          parents: [
+            headSha
+          ]
+        }
+      }
     );
 
-  return Array.from(
-    new Uint8Array(signature)
-  )
-    .map(
-      (byte) =>
-        byte
-          .toString(16)
-          .padStart(2, "0")
-    )
-    .join("");
+  if (!commit?.sha) {
+    throw createHttpError(
+      502,
+      "Unable to create Git commit."
+    );
+  }
+
+  await githubRequest(
+    accessToken,
+    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/refs/heads/${encodeURIComponent(branch)}`,
+    {
+      method: "PATCH",
+      body: {
+        sha:
+          commit.sha,
+        force:
+          false
+      }
+    }
+  );
+
+  return commit;
 }
 
-async function verifySignature(
-  secret,
-  value,
-  expectedSignature
-) {
-  if (
-    !/^[a-f0-9]{64}$/i.test(
-      expectedSignature
-    )
-  ) {
+/* =========================================================
+   VERIFY CHANGES
+========================================================= */
+
+async function verifyChangesAgainstCommit({
+  accessToken,
+  owner,
+  repo,
+  commit,
+  changes
+}) {
+  const treeSha =
+    cleanString(
+      commit?.commit?.tree?.sha
+    );
+
+  if (!treeSha) {
     return false;
   }
 
-  const key =
-    await crypto.subtle.importKey(
-      "raw",
-      new TextEncoder().encode(secret),
-      {
-        name: "HMAC",
-        hash: "SHA-256"
-      },
-      false,
-      ["verify"]
+  const tree =
+    await githubRequest(
+      accessToken,
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/trees/${encodeURIComponent(treeSha)}?recursive=1`
     );
 
-  const bytes =
-    new Uint8Array(32);
+  const entries =
+    Array.isArray(
+      tree?.tree
+    )
+      ? tree.tree
+      : [];
 
-  for (let i = 0; i < 32; i++) {
-    bytes[i] =
-      parseInt(
-        expectedSignature.slice(
-          i * 2,
-          i * 2 + 2
-        ),
-        16
+  const map =
+    new Map(
+      entries
+        .filter(
+          (entry) =>
+            entry &&
+            entry.type === "blob"
+        )
+        .map(
+          (entry) => [
+            entry.path,
+            entry
+          ]
+        )
+    );
+
+  for (
+    const change of changes
+  ) {
+    const entry =
+      map.get(
+        change.path
       );
+
+    if (
+      change.operation ===
+      "delete"
+    ) {
+      if (entry) {
+        return false;
+      }
+
+      continue;
+    }
+
+    if (!entry) {
+      return false;
+    }
+
+    if (
+      typeof change.content ===
+      "string"
+    ) {
+      const file =
+        await loadRepositoryFile(
+          accessToken,
+          owner,
+          repo,
+          "main",
+          change.path
+        );
+
+      if (
+        !file ||
+        file.content !==
+          change.content
+      ) {
+        return false;
+      }
+    }
   }
 
-  return crypto.subtle.verify(
-    "HMAC",
-    key,
-    bytes,
-    new TextEncoder().encode(value)
-  );
+  return true;
 }
 
-function parsePermissionToken(
-  token
+/* =========================================================
+   PERMISSION HELPERS
+========================================================= */
+
+function normalizePermissionMode(
+  mode
 ) {
-  if (
-    typeof token !== "string"
-  ) {
-    return null;
-  }
-
-  const separator =
-    token.indexOf(".");
-
-  if (separator <= 0) {
-    return null;
-  }
-
-  const id =
-    token.slice(0, separator);
-
-  const signature =
-    token.slice(separator + 1);
+  const value =
+    cleanString(mode)
+      .toLowerCase();
 
   if (
-    !/^[a-f0-9]{64}$/i.test(id) ||
-    !/^[a-f0-9]{64}$/i.test(
-      signature
-    )
+    value === "allow_once" ||
+    value === "allow-once"
   ) {
-    return null;
+    return "allow_once";
   }
 
-  return {
-    id,
-    signature
-  };
+  if (
+    value === "allow_task" ||
+    value === "allow-task"
+  ) {
+    return "allow_task";
+  }
+
+  if (
+    value === "deny"
+  ) {
+    return "deny";
+  }
+
+  return null;
+}
+
+function getPermissionExpiration(
+  mode
+) {
+  const now =
+    Date.now();
+
+  if (
+    mode === "allow_once"
+  ) {
+    return new Date(
+      now + 10 * 60 * 1000
+    ).toISOString();
+  }
+
+  if (
+    mode === "allow_task"
+  ) {
+    return new Date(
+      now + 60 * 60 * 1000
+    ).toISOString();
+  }
+
+  return null;
+}
+
+function createPermissionId() {
+  if (
+    typeof crypto !==
+      "undefined" &&
+    typeof crypto.randomUUID ===
+      "function"
+  ) {
+    return crypto.randomUUID();
+  }
+
+  return `${Date.now()}-${Math.random()
+    .toString(36)
+    .slice(2)}`;
 }
 
 function buildPermissionPayload({
@@ -3425,17 +3466,93 @@ function buildPermissionPayload({
     repo,
     branch,
     changesHash,
-    String(expiresAt)
+    expiresAt || ""
   ].join("|");
 }
 
-function createPermissionId() {
-  const bytes =
-    new Uint8Array(32);
+async function createSignature(
+  secret,
+  payload
+) {
+  const encoder =
+    new TextEncoder();
 
-  crypto.getRandomValues(bytes);
+  const key =
+    await crypto.subtle.importKey(
+      "raw",
+      encoder.encode(secret),
+      {
+        name:
+          "HMAC",
+        hash:
+          "SHA-256"
+      },
+      false,
+      [
+        "sign"
+      ]
+    );
 
-  return Array.from(bytes)
+  const signature =
+    await crypto.subtle.sign(
+      "HMAC",
+      key,
+      encoder.encode(payload)
+    );
+
+  return arrayBufferToHex(
+    signature
+  );
+}
+
+async function hashChanges(
+  changes
+) {
+  const normalized =
+    JSON.stringify(
+      changes
+        .map(
+          (change) => ({
+            path:
+              change.path,
+            operation:
+              change.operation,
+            content:
+              change.operation ===
+              "delete"
+                ? undefined
+                : change.content
+          })
+        )
+        .sort(
+          (a, b) =>
+            a.path.localeCompare(
+              b.path
+            )
+        )
+    );
+
+  const digest =
+    await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(
+        normalized
+      )
+    );
+
+  return arrayBufferToHex(
+    digest
+  );
+}
+
+function arrayBufferToHex(
+  buffer
+) {
+  return [
+    ...new Uint8Array(
+      buffer
+    )
+  ]
     .map(
       (byte) =>
         byte
@@ -3445,24 +3562,219 @@ function createPermissionId() {
     .join("");
 }
 
-function getPermissionExpiration(
-  mode
+async function validatePermission(
+  request,
+  context,
+  changes
 ) {
-  return mode === "allow_once"
-    ? Date.now() + 5 * 60 * 1000
-    : Date.now() + 60 * 60 * 1000;
+  const secret =
+    process.env.LD76_AGENT_PERMISSION_SECRET;
+
+  if (!secret) {
+    return {
+      ok: false,
+      status: 503,
+      error:
+        "Agent permission secret is not configured."
+    };
+  }
+
+  const cookie =
+    parseCookies(
+      request.headers?.cookie
+    );
+
+  const token =
+    cookie[
+      PERMISSION_COOKIE
+    ];
+
+  if (!token) {
+    return {
+      ok: false,
+      status: 403,
+      error:
+        "Permission is required before repository changes can be applied."
+    };
+  }
+
+  const separator =
+    token.indexOf(".");
+
+  if (separator <= 0) {
+    return {
+      ok: false,
+      status: 403,
+      error:
+        "Invalid agent permission token."
+    };
+  }
+
+  const id =
+    token.slice(
+      0,
+      separator
+    );
+
+  const signature =
+    token.slice(
+      separator + 1
+    );
+
+  const changesHash =
+    await hashChanges(
+      changes
+    );
+
+  const rawPayload =
+    await findPermissionPayload(
+      request,
+      id,
+      context,
+      changesHash
+    );
+
+  if (!rawPayload) {
+    return {
+      ok: false,
+      status: 403,
+      error:
+        "Agent permission does not match this repository or change set."
+    };
+  }
+
+  const expected =
+    await createSignature(
+      secret,
+      rawPayload.payload
+    );
+
+  if (
+    !safeEqual(
+      signature,
+      expected
+    )
+  ) {
+    return {
+      ok: false,
+      status: 403,
+      error:
+        "Invalid agent permission signature."
+    };
+  }
+
+  if (
+    rawPayload.expiresAt &&
+    Date.parse(
+      rawPayload.expiresAt
+    ) <= Date.now()
+  ) {
+    return {
+      ok: false,
+      status: 403,
+      expired: true,
+      error:
+        "Agent permission has expired."
+    };
+  }
+
+  return {
+    ok: true,
+    mode:
+      rawPayload.mode
+  };
 }
 
-function normalizePermissionMode(
-  mode
+async function findPermissionPayload(
+  request,
+  id,
+  context,
+  changesHash
 ) {
-  return [
-    "allow_once",
-    "allow_for_task",
-    "deny"
-  ].includes(mode)
-    ? mode
-    : null;
+  const cookie =
+    parseCookies(
+      request.headers?.cookie
+    );
+
+  const token =
+    cookie[
+      PERMISSION_COOKIE
+    ];
+
+  const parts =
+    cleanString(token)
+      .split(".");
+
+  if (
+    parts.length !== 2 ||
+    parts[0] !== id
+  ) {
+    return null;
+  }
+
+  const mode =
+    cookieValue(
+      cookie,
+      "ld76_permission_mode"
+    );
+
+  const owner =
+    cookieValue(
+      cookie,
+      "ld76_permission_owner"
+    );
+
+  const repo =
+    cookieValue(
+      cookie,
+      "ld76_permission_repo"
+    );
+
+  const branch =
+    cookieValue(
+      cookie,
+      "ld76_permission_branch"
+    );
+
+  const storedHash =
+    cookieValue(
+      cookie,
+      "ld76_permission_changes"
+    );
+
+  const expiresAt =
+    cookieValue(
+      cookie,
+      "ld76_permission_expires"
+    );
+
+  if (
+    owner !== context.owner ||
+    repo !== context.repo ||
+    branch !== context.branch ||
+    storedHash !== changesHash
+  ) {
+    return null;
+  }
+
+  const payload =
+    buildPermissionPayload({
+      id,
+      mode,
+      owner,
+      repo,
+      branch,
+      changesHash,
+      expiresAt:
+        expiresAt || null
+    });
+
+  return {
+    mode,
+    expiresAt:
+      expiresAt || null,
+    payload
+  };
 }
 
 function createPermissionCookie({
@@ -3474,159 +3786,134 @@ function createPermissionCookie({
   changesHash,
   expiresAt
 }) {
-  const payload =
-    Buffer.from(
-      JSON.stringify({
-        token,
-        mode,
-        owner,
-        repo,
-        branch,
-        changesHash,
-        expiresAt
-      }),
-      "utf8"
-    ).toString("base64url");
-
   const maxAge =
-    Math.max(
-      0,
-      Math.floor(
-        (expiresAt - Date.now()) /
-        1000
-      )
-    );
+    expiresAt
+      ? Math.max(
+          1,
+          Math.floor(
+            (
+              Date.parse(
+                expiresAt
+              ) -
+              Date.now()
+            ) /
+              1000
+          )
+        )
+      : 0;
+
+  const secure =
+    "ld76_permission=" +
+    encodeURIComponent(token) +
+    "; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=" +
+    maxAge;
+
+  const metadata = [
+    `ld76_permission_mode=${encodeURIComponent(mode)}`,
+    `ld76_permission_owner=${encodeURIComponent(owner)}`,
+    `ld76_permission_repo=${encodeURIComponent(repo)}`,
+    `ld76_permission_branch=${encodeURIComponent(branch)}`,
+    `ld76_permission_changes=${encodeURIComponent(changesHash)}`,
+    `ld76_permission_expires=${encodeURIComponent(expiresAt || "")}`
+  ].join("; ");
 
   return [
-    `${PERMISSION_COOKIE}=${encodeURIComponent(
-      payload
-    )}`,
-    "Path=/",
-    "HttpOnly",
-    "Secure",
-    "SameSite=Lax",
-    `Max-Age=${maxAge}`
-  ].join("; ");
+    secure,
+    metadata
+  ].join(", ");
 }
 
 function createExpiredPermissionCookie() {
   return [
-    `${PERMISSION_COOKIE}=`,
-    "Path=/",
-    "HttpOnly",
-    "Secure",
-    "SameSite=Lax",
-    "Max-Age=0"
-  ].join("; ");
+    `${PERMISSION_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`,
+    "ld76_permission_mode=; Path=/; Max-Age=0",
+    "ld76_permission_owner=; Path=/; Max-Age=0",
+    "ld76_permission_repo=; Path=/; Max-Age=0",
+    "ld76_permission_branch=; Path=/; Max-Age=0",
+    "ld76_permission_changes=; Path=/; Max-Age=0",
+    "ld76_permission_expires=; Path=/; Max-Age=0"
+  ].join(", ");
 }
 
-/* =========================================================
-   COMMON
-========================================================= */
-
-function getCookie(
-  request,
-  name
+function clearPermissionCookie(
+  response
 ) {
-  const header =
-    request.headers?.cookie || "";
-
-  for (
-    const part of header.split(";")
-  ) {
-    const index =
-      part.indexOf("=");
-
-    if (index === -1) {
-      continue;
-    }
-
-    const key =
-      part.slice(0, index).trim();
-
-    if (key !== name) {
-      continue;
-    }
-
-    const value =
-      part.slice(index + 1).trim();
-
-    try {
-      return decodeURIComponent(
-        value
-      );
-    } catch {
-      return value;
-    }
-  }
-
-  return "";
-}
-
-function getAccessToken(
-  request
-) {
-  return getCookie(
-    request,
-    ACCESS_TOKEN_COOKIE
+  response.setHeader(
+    "Set-Cookie",
+    createExpiredPermissionCookie()
   );
 }
 
-function parseBody(
-  request
-) {
-  if (
-    typeof request.body === "object" &&
-    request.body !== null
-  ) {
-    return request.body;
-  }
-
-  try {
-    return JSON.parse(
-      request.body || "{}"
-    );
-  } catch {
-    return null;
-  }
-}
-
-function cleanString(
-  value
-) {
-  return typeof value === "string"
-    ? value.trim()
-    : "";
-}
+/* =========================================================
+   REPOSITORY CONTEXT
+========================================================= */
 
 function validateRepositoryContext(
   body
 ) {
   const owner =
-    cleanString(body.owner);
+    cleanString(
+      body?.owner
+    );
 
   const repo =
-    cleanString(body.repo);
+    cleanString(
+      body?.repo
+    );
 
   const branch =
-    cleanString(body.branch);
+    cleanString(
+      body?.branch
+    );
+
+  if (!owner) {
+    return {
+      ok: false,
+      error:
+        "Repository owner is required."
+    };
+  }
+
+  if (!repo) {
+    return {
+      ok: false,
+      error:
+        "Repository name is required."
+    };
+  }
+
+  if (!branch) {
+    return {
+      ok: false,
+      error:
+        "Repository branch is required."
+    };
+  }
 
   if (
-    !isValidRepositoryName(owner) ||
-    !isValidRepositoryName(repo)
+    !isValidGitHubName(
+      owner
+    ) ||
+    !isValidGitHubName(
+      repo
+    )
   ) {
     return {
       ok: false,
       error:
-        "Invalid GitHub repository name."
+        "Invalid GitHub repository."
     };
   }
 
-  if (!isValidBranchName(branch)) {
+  if (
+    !isValidBranch(
+      branch
+    )
+  ) {
     return {
       ok: false,
       error:
-        "Invalid GitHub branch name."
+        "Invalid GitHub branch."
     };
   }
 
@@ -3638,70 +3925,291 @@ function validateRepositoryContext(
   };
 }
 
-function isValidRepositoryName(
-  value
+/* =========================================================
+   ACCESS TOKEN
+========================================================= */
+
+function getAccessToken(
+  request
 ) {
-  return (
-    typeof value === "string" &&
-    /^[A-Za-z0-9_.-]+$/.test(value) &&
-    value.length <= 100
+  const cookies =
+    parseCookies(
+      request.headers?.cookie
+    );
+
+  return cleanString(
+    cookies[
+      ACCESS_TOKEN_COOKIE
+    ]
   );
 }
 
-function isValidBranchName(
+/* =========================================================
+   UTILITIES
+========================================================= */
+
+function parseBody(
+  request
+) {
+  if (
+    request?.body &&
+    typeof request.body ===
+      "object"
+  ) {
+    return request.body;
+  }
+
+  return null;
+}
+
+function cleanString(
+  value
+) {
+  return typeof value ===
+    "string"
+    ? value.trim()
+    : "";
+}
+
+function normalizePath(
+  value
+) {
+  const path =
+    cleanString(value)
+      .replace(
+        /\\/g,
+        "/"
+      );
+
+  if (
+    !path ||
+    path.startsWith("/") ||
+    path.includes("\0") ||
+    path.includes("..")
+  ) {
+    return "";
+  }
+
+  return path;
+}
+
+function normalizeOperation(
+  value
+) {
+  const operation =
+    cleanString(value)
+      .toLowerCase();
+
+  if (
+    operation === "create" ||
+    operation === "update" ||
+    operation === "delete"
+  ) {
+    return operation;
+  }
+
+  return null;
+}
+
+function normalizeRisk(
+  value
+) {
+  const risk =
+    cleanString(value)
+      .toLowerCase();
+
+  if (
+    risk === "high" ||
+    risk === "medium" ||
+    risk === "low"
+  ) {
+    return risk;
+  }
+
+  return "medium";
+}
+
+function isValidGitHubName(
+  value
+) {
+  return /^[A-Za-z0-9_.-]+$/.test(
+    value
+  );
+}
+
+function isValidBranch(
   value
 ) {
   return (
-    typeof value === "string" &&
-    value.length > 0 &&
-    value.length <= 255 &&
-    !value.startsWith("/") &&
-    !value.endsWith("/") &&
+    value.length <= 250 &&
     !value.includes("..") &&
-    !value.includes("//") &&
-    !value.includes("\\") &&
-    !value.includes("\0") &&
-    !value.includes("~") &&
-    !value.includes("^") &&
-    !value.includes(":") &&
-    !value.includes("?") &&
-    !value.includes("*") &&
-    !value.includes("[") &&
-    !value.endsWith(".") &&
-    !value.includes("@{")
-  );
-}
-
-function isValidPath(
-  value
-) {
-  return (
-    typeof value === "string" &&
-    value.length > 0 &&
-    value.length <= 500 &&
     !value.startsWith("/") &&
     !value.endsWith("/") &&
-    !value.includes("\\") &&
-    !value.includes("\0") &&
-    !value.split("/").includes("..")
+    !value.includes("//") &&
+    !/[~^:?*\[\]\\]/.test(
+      value
+    )
   );
 }
 
 function isValidSha(
   value
 ) {
-  return (
-    typeof value === "string" &&
-    /^[a-f0-9]{40}$/i.test(value)
+  return /^[a-f0-9]{40}$/i.test(
+    value
   );
+}
+
+function decodeBase64Utf8(
+  value
+) {
+  if (
+    typeof value !==
+    "string"
+  ) {
+    return "";
+  }
+
+  const normalized =
+    value.replace(
+      /\s/g,
+      ""
+    );
+
+  const binary =
+    atob(normalized);
+
+  const bytes =
+    Uint8Array.from(
+      binary,
+      (char) =>
+        char.charCodeAt(0)
+    );
+
+  return new TextDecoder(
+    "utf-8"
+  ).decode(bytes);
+}
+
+function parseCookies(
+  header
+) {
+  const result = {};
+
+  if (
+    typeof header !==
+      "string" ||
+    !header
+  ) {
+    return result;
+  }
+
+  for (
+    const part of header.split(";")
+  ) {
+    const index =
+      part.indexOf("=");
+
+    if (index <= 0) {
+      continue;
+    }
+
+    const key =
+      part
+        .slice(
+          0,
+          index
+        )
+        .trim();
+
+    const value =
+      part
+        .slice(
+          index + 1
+        )
+        .trim();
+
+    try {
+      result[key] =
+        decodeURIComponent(
+          value
+        );
+    } catch {
+      result[key] =
+        value;
+    }
+  }
+
+  return result;
+}
+
+function cookieValue(
+  cookies,
+  name
+) {
+  return cleanString(
+    cookies?.[name]
+  );
+}
+
+function safeEqual(
+  a,
+  b
+) {
+  if (
+    typeof a !== "string" ||
+    typeof b !== "string"
+  ) {
+    return false;
+  }
+
+  if (
+    a.length !==
+    b.length
+  ) {
+    return false;
+  }
+
+  let result = 0;
+
+  for (
+    let index = 0;
+    index < a.length;
+    index += 1
+  ) {
+    result |=
+      a.charCodeAt(index) ^
+      b.charCodeAt(index);
+  }
+
+  return result === 0;
+}
+
+function createHttpError(
+  status,
+  message
+) {
+  const error =
+    new Error(message);
+
+  error.status =
+    status;
+
+  return error;
 }
 
 function methodNotAllowed(
   response
 ) {
+  response.setHeader(
+    "Allow",
+    "POST"
+  );
+
   return response.status(405).json({
     ok: false,
-    error: "Method not allowed."
+    error:
+      "Method not allowed."
   });
 }
 
@@ -3724,86 +4232,4 @@ function unauthorized(
     error: message
   });
 }
-
-function clearPermissionCookie(
-  response
-) {
-  response.setHeader(
-    "Set-Cookie",
-    createExpiredPermissionCookie()
-  );
-}
-
-function parsePermissionCookie(
-  request
-) {
-  const raw =
-    getCookie(
-      request,
-      PERMISSION_COOKIE
-    );
-
-  if (!raw) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(
-      Buffer.from(
-        raw,
-        "base64url"
-      ).toString("utf8")
-    );
-  } catch {
-    return null;
-  }
-}
-
-async function getBranchHead(
-  accessToken,
-  owner,
-  repo,
-  branch
-) {
-  const data =
-    await githubGet(
-      accessToken,
-      `/repos/${encodeURIComponent(
-        owner
-      )}/${encodeURIComponent(
-        repo
-      )}/git/ref/heads/${encodeURIComponent(
-        branch
-      )}`
-    );
-
-  if (
-    !isValidSha(
-      data?.object?.sha
-    )
-  ) {
-    throw new Error(
-      "GitHub returned an invalid branch commit SHA."
-    );
-  }
-
-  return data.object.sha;
-}
-
-async function getCommit(
-  accessToken,
-  owner,
-  repo,
-  sha
-) {
-  return githubGet(
-    accessToken,
-    `/repos/${encodeURIComponent(
-      owner
-    )}/${encodeURIComponent(
-      repo
-    )}/git/commits/${encodeURIComponent(
-      sha
-    )}`
-  );
-}
+```0
