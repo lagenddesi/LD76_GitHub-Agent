@@ -15,6 +15,7 @@ const GEMINI_API =
 
 const MAX_CHANGES = 100;
 const MAX_FILE_SIZE = 500000;
+const MAX_CONTEXT_FILES = 30;
 
 export async function handleAgentRoute(
   request,
@@ -53,12 +54,10 @@ export async function handleAgentRoute(
       error: "Agent API route not found."
     });
   } catch (error) {
-    console.error(
-      "Agent route error:",
-      error
-    );
+    console.error("Agent route error:", error);
 
     return response.status(
+      Number.isInteger(error?.status) &&
       error.status >= 400 &&
       error.status < 600
         ? error.status
@@ -66,13 +65,15 @@ export async function handleAgentRoute(
     ).json({
       ok: false,
       error:
-        error.message ||
+        error?.message ||
         "Agent request failed."
     });
   }
 }
 
-/* PLAN */
+/* =========================================================
+   PLAN
+========================================================= */
 
 async function handlePlan(
   request,
@@ -144,7 +145,7 @@ async function handlePlan(
         context.repo,
         context.branch,
         tree,
-        30
+        MAX_CONTEXT_FILES
       );
 
     const answer =
@@ -217,18 +218,26 @@ async function handlePlan(
   const plan =
     normalizePlan(generated);
 
+  const validatedPlan =
+    validatePlanAgainstTree(
+      plan,
+      tree
+    );
+
   return response.status(200).json({
     ok: true,
     operation: "plan",
     requiresWrite:
-      plan.changes.length > 0,
+      validatedPlan.changes.length > 0,
     changes:
-      plan.changes,
-    plan
+      validatedPlan.changes,
+    plan: validatedPlan
   });
 }
 
-/* CHANGES */
+/* =========================================================
+   CHANGES
+========================================================= */
 
 async function handleChanges(
   request,
@@ -260,7 +269,7 @@ async function handleChanges(
   const message =
     cleanString(body.message);
 
-  if (!message) {
+  if (!message || message.length > 5000) {
     return badRequest(
       response,
       "A valid user request is required."
@@ -295,7 +304,42 @@ async function handleChanges(
       context.branch
     );
 
-  const files =
+  const plan =
+    validatePlanAgainstTree(
+      normalizePlan(body.plan),
+      tree
+    );
+
+  if (plan.changes.length === 0) {
+    return response.status(200).json({
+      ok: true,
+      operation: "changes",
+      model: null,
+      summary:
+        plan.summary ||
+        "No repository changes are required.",
+      changes: [],
+      verification:
+        plan.verification
+    });
+  }
+
+  /*
+   * Critical safety rule:
+   * Read every existing file explicitly named by the plan.
+   * Do not rely only on the top-N relevant files.
+   */
+  const exactFiles =
+    await loadPlannedFiles(
+      accessToken,
+      context.owner,
+      context.repo,
+      context.branch,
+      tree,
+      plan.changes
+    );
+
+  const relevantFiles =
     await loadRelevantFiles(
       accessToken,
       context.owner,
@@ -303,6 +347,12 @@ async function handleChanges(
       context.branch,
       tree,
       30
+    );
+
+  const files =
+    mergeFiles(
+      exactFiles,
+      relevantFiles
     );
 
   const apiKey =
@@ -330,7 +380,7 @@ async function handleChanges(
         buildChangesPrompt({
           message,
           context,
-          plan: body.plan,
+          plan,
           tree,
           files
         })
@@ -339,7 +389,8 @@ async function handleChanges(
   const changes =
     validateChanges(
       generated?.changes,
-      tree
+      tree,
+      plan.changes
     );
 
   return response.status(200).json({
@@ -360,7 +411,9 @@ async function handleChanges(
   });
 }
 
-/* PERMISSION */
+/* =========================================================
+   PERMISSION
+========================================================= */
 
 async function handlePermission(
   request,
@@ -390,9 +443,7 @@ async function handlePermission(
   }
 
   const mode =
-    normalizePermissionMode(
-      body.mode
-    );
+    normalizePermissionMode(body.mode);
 
   if (!mode) {
     return badRequest(
@@ -402,14 +453,22 @@ async function handlePermission(
   }
 
   const changes =
-    normalizeChanges(
-      body.changes
-    );
+    normalizeChanges(body.changes);
 
   if (!changes) {
     return badRequest(
       response,
       "Invalid change set."
+    );
+  }
+
+  if (
+    mode !== "deny" &&
+    changes.length === 0
+  ) {
+    return badRequest(
+      response,
+      "Permission cannot be granted for an empty change set."
     );
   }
 
@@ -424,8 +483,7 @@ async function handlePermission(
   }
 
   const secret =
-    process.env
-      .LD76_AGENT_PERMISSION_SECRET;
+    process.env.LD76_AGENT_PERMISSION_SECRET;
 
   if (!secret) {
     return response.status(503).json({
@@ -513,7 +571,9 @@ async function handlePermission(
   });
 }
 
-/* APPLY */
+/* =========================================================
+   APPLY
+========================================================= */
 
 async function handleApply(
   request,
@@ -587,19 +647,30 @@ async function handleApply(
 
   if (!permission.ok) {
     if (permission.expired) {
-      clearPermissionCookie(
-        response
-      );
+      clearPermissionCookie(response);
     }
 
     return response.status(
       permission.status
     ).json({
       ok: false,
-      error:
-        permission.error
+      error: permission.error
     });
   }
+
+  /*
+   * Critical preflight:
+   * Permission approval is based on a specific repository state.
+   * Re-read the branch immediately before writing.
+   */
+  const preflight =
+    await preflightChanges({
+      accessToken,
+      owner: context.owner,
+      repo: context.repo,
+      branch: context.branch,
+      changes
+    });
 
   const commit =
     await applyGitDataCommit({
@@ -607,17 +678,19 @@ async function handleApply(
       owner: context.owner,
       repo: context.repo,
       branch: context.branch,
+      headSha: preflight.headSha,
+      baseTreeSha:
+        preflight.baseTreeSha,
       message,
-      changes
+      changes,
+      treeEntries:
+        preflight.treeEntries
     });
 
   if (
-    permission.mode ===
-    "allow_once"
+    permission.mode === "allow_once"
   ) {
-    clearPermissionCookie(
-      response
-    );
+    clearPermissionCookie(response);
   }
 
   return response.status(200).json({
@@ -639,7 +712,9 @@ async function handleApply(
   });
 }
 
-/* VERIFY */
+/* =========================================================
+   VERIFY
+========================================================= */
 
 async function handleVerify(
   request,
@@ -708,9 +783,7 @@ async function handleVerify(
       context.branch
     );
 
-  if (
-    branchHead !== commitSha
-  ) {
+  if (branchHead !== commitSha) {
     return response.status(409).json({
       ok: false,
       verified: false,
@@ -740,23 +813,18 @@ async function handleVerify(
         ref: commitSha
       });
 
-    if (
-      change.operation ===
-      "delete"
-    ) {
+    if (change.operation === "delete") {
       if (file) {
         failedFiles.push({
           path: change.path,
-          operation:
-            change.operation,
+          operation: change.operation,
           reason:
             "File still exists after delete."
         });
       } else {
         verifiedFiles.push({
           path: change.path,
-          operation:
-            change.operation,
+          operation: change.operation,
           verified: true
         });
       }
@@ -767,8 +835,7 @@ async function handleVerify(
     if (!file) {
       failedFiles.push({
         path: change.path,
-        operation:
-          change.operation,
+        operation: change.operation,
         reason:
           "File does not exist after apply."
       });
@@ -776,14 +843,10 @@ async function handleVerify(
       continue;
     }
 
-    if (
-      file.content !==
-      change.content
-    ) {
+    if (file.content !== change.content) {
       failedFiles.push({
         path: change.path,
-        operation:
-          change.operation,
+        operation: change.operation,
         reason:
           "Actual GitHub file content does not match the generated content."
       });
@@ -793,8 +856,7 @@ async function handleVerify(
 
     verifiedFiles.push({
       path: change.path,
-      operation:
-        change.operation,
+      operation: change.operation,
       verified: true
     });
   }
@@ -805,8 +867,7 @@ async function handleVerify(
       verified: false,
       commit: {
         sha: commitSha,
-        message:
-          commit?.message || ""
+        message: commit?.message || ""
       },
       verifiedFiles,
       failedFiles,
@@ -820,19 +881,19 @@ async function handleVerify(
     verified: true,
     commit: {
       sha: commitSha,
-      message:
-        commit?.message || "",
+      message: commit?.message || "",
       url:
         `https://github.com/${context.owner}/${context.repo}/commit/${commitSha}`
     },
-    branch:
-      context.branch,
+    branch: context.branch,
     verifiedFiles,
     failedFiles: []
   });
 }
 
-/* CHAT */
+/* =========================================================
+   CHAT
+========================================================= */
 
 async function handleChat(
   request,
@@ -892,7 +953,9 @@ async function handleChat(
   });
 }
 
-/* GITHUB */
+/* =========================================================
+   GITHUB
+========================================================= */
 
 async function githubRequest(
   accessToken,
@@ -910,6 +973,8 @@ async function githubRequest(
             "application/vnd.github+json",
           Authorization:
             `Bearer ${accessToken}`,
+          "User-Agent":
+            "LD76-GitHub-Agent",
           "X-GitHub-Api-Version":
             GITHUB_API_VERSION,
           ...(options.body
@@ -921,8 +986,7 @@ async function githubRequest(
         },
         ...(options.body
           ? {
-              body:
-                options.body
+              body: options.body
             }
           : {})
       }
@@ -944,7 +1008,7 @@ async function githubRequest(
     const error =
       new Error(
         data?.message ||
-          "GitHub API request failed."
+        "GitHub API request failed."
       );
 
     error.status =
@@ -984,9 +1048,7 @@ async function loadRepositoryTree(
       )}?recursive=1`
     );
 
-  if (
-    !Array.isArray(data?.tree)
-  ) {
+  if (!Array.isArray(data?.tree)) {
     throw new Error(
       "GitHub returned an invalid repository tree."
     );
@@ -995,8 +1057,7 @@ async function loadRepositoryTree(
   return data.tree
     .filter(
       (entry) =>
-        typeof entry?.path ===
-          "string" &&
+        typeof entry?.path === "string" &&
         (
           entry.type === "blob" ||
           entry.type === "tree"
@@ -1007,10 +1068,12 @@ async function loadRepositoryTree(
       type: entry.type,
       sha: entry.sha,
       size:
-        Number.isInteger(
-          entry.size
-        )
+        Number.isInteger(entry.size)
           ? entry.size
+          : null,
+      mode:
+        typeof entry.mode === "string"
+          ? entry.mode
           : null
     }));
 }
@@ -1026,9 +1089,7 @@ async function getFileAtRef({
     const encoded =
       path
         .split("/")
-        .map(
-          encodeURIComponent
-        )
+        .map(encodeURIComponent)
         .join("/");
 
     const data =
@@ -1045,8 +1106,7 @@ async function getFileAtRef({
 
     if (
       data?.type !== "file" ||
-      typeof data.content !==
-        "string"
+      typeof data.content !== "string"
     ) {
       throw new Error(
         `GitHub path is not a readable file: ${path}`
@@ -1055,23 +1115,16 @@ async function getFileAtRef({
 
     const content =
       Buffer.from(
-        data.content.replace(
-          /\s/g,
-          ""
-        ),
+        data.content.replace(/\s/g, ""),
         "base64"
-      ).toString(
-        "utf8"
-      );
+      ).toString("utf8");
 
     return {
       path,
       sha: data.sha,
       content,
       size:
-        Number.isInteger(
-          data.size
-        )
+        Number.isInteger(data.size)
           ? data.size
           : content.length
     };
@@ -1132,9 +1185,109 @@ async function loadRelevantFiles(
   return files;
 }
 
-function filePriority(
-  path
+async function loadPlannedFiles(
+  accessToken,
+  owner,
+  repo,
+  branch,
+  tree,
+  changes
 ) {
+  const entries =
+    new Map(
+      tree.map(
+        (entry) => [
+          entry.path,
+          entry
+        ]
+      )
+    );
+
+  const files = [];
+
+  for (const change of changes) {
+    if (
+      change.operation === "create"
+    ) {
+      continue;
+    }
+
+    const entry =
+      entries.get(change.path);
+
+    if (!entry) {
+      throw new Error(
+        `Planned file does not exist in the current repository tree: ${change.path}`
+      );
+    }
+
+    if (entry.type !== "blob") {
+      throw new Error(
+        `Planned path is not a regular file: ${change.path}`
+      );
+    }
+
+    if (
+      Number(entry.size) >
+      MAX_FILE_SIZE
+    ) {
+      throw new Error(
+        `Planned file is too large to inspect safely: ${change.path}`
+      );
+    }
+
+    const file =
+      await getFileAtRef({
+        accessToken,
+        owner,
+        repo,
+        path: change.path,
+        ref: branch
+      });
+
+    if (!file) {
+      throw new Error(
+        `Could not read planned file: ${change.path}`
+      );
+    }
+
+    if (
+      change.sha &&
+      change.sha !== file.sha
+    ) {
+      throw new Error(
+        `Planned file SHA is stale: ${change.path}`
+      );
+    }
+
+    files.push(file);
+  }
+
+  return files;
+}
+
+function mergeFiles(
+  primary,
+  secondary
+) {
+  const map = new Map();
+
+  for (const file of [
+    ...primary,
+    ...secondary
+  ]) {
+    if (
+      file &&
+      typeof file.path === "string"
+    ) {
+      map.set(file.path, file);
+    }
+  }
+
+  return Array.from(map.values());
+}
+
+function filePriority(path) {
   const lower =
     path.toLowerCase();
 
@@ -1184,14 +1337,15 @@ function filePriority(
   return 10;
 }
 
-/* GITHUB COMMIT */
+/* =========================================================
+   APPLY PREFLIGHT
+========================================================= */
 
-async function applyGitDataCommit({
+async function preflightChanges({
   accessToken,
   owner,
   repo,
   branch,
-  message,
   changes
 }) {
   const headSha =
@@ -1219,17 +1373,83 @@ async function applyGitDataCommit({
     );
   }
 
+  const treeEntries =
+    await loadRepositoryTree(
+      accessToken,
+      owner,
+      repo,
+      branch
+    );
+
+  validateChanges(
+    changes,
+    treeEntries
+  );
+
+  return {
+    headSha,
+    baseTreeSha,
+    treeEntries
+  };
+}
+
+/* =========================================================
+   GITHUB COMMIT
+========================================================= */
+
+async function applyGitDataCommit({
+  accessToken,
+  owner,
+  repo,
+  branch,
+  headSha,
+  baseTreeSha,
+  message,
+  changes,
+  treeEntries
+}) {
+  const currentHead =
+    await getBranchHead(
+      accessToken,
+      owner,
+      repo,
+      branch
+    );
+
+  if (currentHead !== headSha) {
+    const error =
+      new Error(
+        "The selected branch changed before the GitHub write could be completed. Re-plan and request permission again."
+      );
+
+    error.status = 409;
+
+    throw error;
+  }
+
+  const entryMap =
+    new Map(
+      treeEntries.map(
+        (entry) => [
+          entry.path,
+          entry
+        ]
+      )
+    );
+
   const tree = [];
 
   for (const change of changes) {
+    const current =
+      entryMap.get(change.path);
+
     if (
-      change.operation ===
-      "delete"
+      change.operation === "delete"
     ) {
       tree.push({
-        path:
-          change.path,
-        mode: "100644",
+        path: change.path,
+        mode:
+          current?.mode || "100644",
         type: "blob",
         sha: null
       });
@@ -1248,10 +1468,8 @@ async function applyGitDataCommit({
         {
           method: "POST",
           body: JSON.stringify({
-            content:
-              change.content,
-            encoding:
-              "utf-8"
+            content: change.content,
+            encoding: "utf-8"
           })
         }
       );
@@ -1263,9 +1481,9 @@ async function applyGitDataCommit({
     }
 
     tree.push({
-      path:
-        change.path,
-      mode: "100644",
+      path: change.path,
+      mode:
+        current?.mode || "100644",
       type: "blob",
       sha: blob.sha
     });
@@ -1282,8 +1500,7 @@ async function applyGitDataCommit({
       {
         method: "POST",
         body: JSON.stringify({
-          base_tree:
-            baseTreeSha,
+          base_tree: baseTreeSha,
           tree
         })
       }
@@ -1307,11 +1524,8 @@ async function applyGitDataCommit({
         method: "POST",
         body: JSON.stringify({
           message,
-          tree:
-            newTree.sha,
-          parents: [
-            headSha
-          ]
+          tree: newTree.sha,
+          parents: [headSha]
         })
       }
     );
@@ -1322,11 +1536,6 @@ async function applyGitDataCommit({
     );
   }
 
-  /*
-   * Optimistic concurrency:
-   * GitHub will reject this non-force update if the branch
-   * moved after we read headSha.
-   */
   const updated =
     await githubRequest(
       accessToken,
@@ -1340,8 +1549,7 @@ async function applyGitDataCommit({
       {
         method: "PATCH",
         body: JSON.stringify({
-          sha:
-            newCommit.sha,
+          sha: newCommit.sha,
           force: false
         })
       }
@@ -1357,13 +1565,14 @@ async function applyGitDataCommit({
   }
 
   return {
-    sha:
-      newCommit.sha,
+    sha: newCommit.sha,
     message
   };
 }
 
-/* PERMISSION */
+/* =========================================================
+   PERMISSION VALIDATION
+========================================================= */
 
 async function validatePermission(
   request,
@@ -1398,8 +1607,7 @@ async function validatePermission(
     !Number.isFinite(
       permission.expiresAt
     ) ||
-    permission.expiresAt <=
-      Date.now()
+    permission.expiresAt <= Date.now()
   ) {
     return {
       ok: false,
@@ -1411,12 +1619,9 @@ async function validatePermission(
   }
 
   if (
-    permission.owner !==
-      context.owner ||
-    permission.repo !==
-      context.repo ||
-    permission.branch !==
-      context.branch
+    permission.owner !== context.owner ||
+    permission.repo !== context.repo ||
+    permission.branch !== context.branch
   ) {
     return {
       ok: false,
@@ -1427,10 +1632,8 @@ async function validatePermission(
   }
 
   if (
-    permission.mode !==
-      "allow_once" &&
-    permission.mode !==
-      "allow_for_task"
+    permission.mode !== "allow_once" &&
+    permission.mode !== "allow_for_task"
   ) {
     return {
       ok: false,
@@ -1443,7 +1646,10 @@ async function validatePermission(
   const normalized =
     normalizeChanges(changes);
 
-  if (!normalized) {
+  if (
+    !normalized ||
+    normalized.length === 0
+  ) {
     return {
       ok: false,
       status: 403,
@@ -1482,8 +1688,7 @@ async function validatePermission(
   }
 
   const secret =
-    process.env
-      .LD76_AGENT_PERMISSION_SECRET;
+    process.env.LD76_AGENT_PERMISSION_SECRET;
 
   if (!secret) {
     return {
@@ -1497,17 +1702,12 @@ async function validatePermission(
   const payload =
     buildPermissionPayload({
       id: parsed.id,
-      mode:
-        permission.mode,
-      owner:
-        context.owner,
-      repo:
-        context.repo,
-      branch:
-        context.branch,
+      mode: permission.mode,
+      owner: context.owner,
+      repo: context.repo,
+      branch: context.branch,
       changesHash,
-      expiresAt:
-        permission.expiresAt
+      expiresAt: permission.expiresAt
     });
 
   const valid =
@@ -1528,12 +1728,13 @@ async function validatePermission(
 
   return {
     ok: true,
-    mode:
-      permission.mode
+    mode: permission.mode
   };
 }
 
-/* GEMINI */
+/* =========================================================
+   GEMINI
+========================================================= */
 
 async function listGeminiModels(
   apiKey
@@ -1574,9 +1775,7 @@ async function listGeminiModels(
 
     try {
       data =
-        text
-          ? JSON.parse(text)
-          : null;
+        text ? JSON.parse(text) : null;
     } catch {
       data = null;
     }
@@ -1584,21 +1783,14 @@ async function listGeminiModels(
     if (!result.ok) {
       throw new Error(
         data?.error?.message ||
-          "Could not load Gemini models."
+        "Could not load Gemini models."
       );
     }
 
-    if (
-      Array.isArray(
-        data?.models
-      )
-    ) {
-      for (
-        const model of data.models
-      ) {
+    if (Array.isArray(data?.models)) {
+      for (const model of data.models) {
         if (
-          typeof model?.name !==
-            "string" ||
+          typeof model?.name !== "string" ||
           !Array.isArray(
             model.supportedGenerationMethods
           ) ||
@@ -1637,9 +1829,7 @@ async function chooseGeminiModel(
   requestedModel
 ) {
   const models =
-    await listGeminiModels(
-      apiKey
-    );
+    await listGeminiModels(apiKey);
 
   if (!models.length) {
     throw new Error(
@@ -1654,8 +1844,7 @@ async function chooseGeminiModel(
     const selected =
       models.find(
         (model) =>
-          model.name ===
-          requestedModel
+          model.name === requestedModel
       );
 
     if (!selected) {
@@ -1667,34 +1856,23 @@ async function chooseGeminiModel(
     return selected.name;
   }
 
-  return [...models]
-    .sort(
-      (a, b) => {
-        const outputA =
-          Number(
-            a.outputTokenLimit
-          ) || 0;
+  return [...models].sort(
+    (a, b) => {
+      const outputA =
+        Number(a.outputTokenLimit) || 0;
 
-        const outputB =
-          Number(
-            b.outputTokenLimit
-          ) || 0;
+      const outputB =
+        Number(b.outputTokenLimit) || 0;
 
-        if (
-          outputA !==
-          outputB
-        ) {
-          return (
-            outputB -
-            outputA
-          );
-        }
-
-        return a.name.localeCompare(
-          b.name
-        );
+      if (outputA !== outputB) {
+        return outputB - outputA;
       }
-    )[0].name;
+
+      return a.name.localeCompare(
+        b.name
+      );
+    }
+  )[0].name;
 }
 
 async function generateGeminiJson({
@@ -1711,14 +1889,56 @@ async function generateGeminiJson({
     });
 
   try {
-    return JSON.parse(
-      output
-    );
+    return parseGeminiJson(output);
   } catch {
     throw new Error(
       "Gemini returned invalid JSON."
     );
   }
+}
+
+function parseGeminiJson(
+  output
+) {
+  const text =
+    String(output || "").trim();
+
+  try {
+    return JSON.parse(text);
+  } catch {}
+
+  const fenced =
+    text.match(
+      /```(?:json)?\s*([\s\S]*?)\s*```/i
+    );
+
+  if (fenced) {
+    return JSON.parse(
+      fenced[1]
+    );
+  }
+
+  const first =
+    text.indexOf("{");
+
+  const last =
+    text.lastIndexOf("}");
+
+  if (
+    first >= 0 &&
+    last > first
+  ) {
+    return JSON.parse(
+      text.slice(
+        first,
+        last + 1
+      )
+    );
+  }
+
+  throw new Error(
+    "No valid JSON object was found."
+  );
 }
 
 async function generateGeminiText({
@@ -1775,8 +1995,7 @@ async function callGemini({
               role: "user",
               parts: [
                 {
-                  text:
-                    prompt
+                  text: prompt
                 }
               ]
             }
@@ -1799,10 +2018,16 @@ async function callGemini({
   }
 
   if (!result.ok) {
-    throw new Error(
-      data?.error?.message ||
+    const error =
+      new Error(
+        data?.error?.message ||
         "Gemini request failed."
-    );
+      );
+
+    error.status =
+      result.status;
+
+    throw error;
   }
 
   const output =
@@ -1833,7 +2058,9 @@ async function callGemini({
   return output.trim();
 }
 
-/* INSPECTION */
+/* =========================================================
+   INSPECTION
+========================================================= */
 
 function isReadOnlyInspectionRequest(
   message
@@ -1917,34 +2144,33 @@ async function generateInspectionAnswer({
         "auto"
       );
 
-    const prompt =
-      [
-        "You are the read-only repository inspector for LD76 Code Agent.",
-        "Do not propose or perform code changes.",
-        "Do not invent files.",
-        "Use only facts visible in the supplied repository tree and files.",
-        "",
-        `Repository: ${context.owner}/${context.repo}`,
-        `Branch: ${context.branch}`,
-        "",
-        "User request:",
-        message,
-        "",
-        "Repository tree:",
-        tree
-          .map(
-            (entry) =>
-              `${entry.type}: ${entry.path}`
-          )
-          .join("\n"),
-        "",
-        "Readable files:",
-        buildFileContext(files),
-        "",
-        "Return concise plain text.",
-        "Explain the project structure, important files, major responsibilities and deployment/configuration files.",
-        "Clearly state that no files were modified."
-      ].join("\n");
+    const prompt = [
+      "You are the read-only repository inspector for LD76 Code Agent.",
+      "Do not propose or perform code changes.",
+      "Do not invent files.",
+      "Use only facts visible in the supplied repository tree and files.",
+      "",
+      `Repository: ${context.owner}/${context.repo}`,
+      `Branch: ${context.branch}`,
+      "",
+      "User request:",
+      message,
+      "",
+      "Repository tree:",
+      tree
+        .map(
+          (entry) =>
+            `${entry.type}: ${entry.path}`
+        )
+        .join("\n"),
+      "",
+      "Readable files:",
+      buildFileContext(files),
+      "",
+      "Return concise plain text.",
+      "Explain the project structure, important files, major responsibilities and deployment/configuration files.",
+      "Clearly state that no files were modified."
+    ].join("\n");
 
     const answer =
       await generateGeminiText({
@@ -1989,9 +2215,7 @@ function buildLocalInspection(
       entry.path.split("/");
 
     if (parts.length > 1) {
-      directories.add(
-        parts[0]
-      );
+      directories.add(parts[0]);
     }
   }
 
@@ -2035,7 +2259,9 @@ function buildLocalInspection(
   return lines.join("\n");
 }
 
-/* PROMPTS */
+/* =========================================================
+   PROMPTS
+========================================================= */
 
 function buildPlanPrompt({
   message,
@@ -2154,13 +2380,12 @@ function buildChangesPrompt({
     "7. Existing files must only be changed when their actual contents are supplied.",
     "8. Never include secrets or credentials.",
     "9. Keep unrelated files unchanged.",
-    "10. If no change is needed, return an empty changes array."
+    "10. Return exactly the planned change paths and operations.",
+    "11. If the plan says no change, return an empty changes array."
   ].join("\n");
 }
 
-function buildFileContext(
-  files
-) {
+function buildFileContext(files) {
   return files
     .map(
       (file) =>
@@ -2173,11 +2398,11 @@ function buildFileContext(
     .join("\n\n");
 }
 
-/* NORMALIZATION */
+/* =========================================================
+   NORMALIZATION
+========================================================= */
 
-function normalizePlan(
-  value
-) {
+function normalizePlan(value) {
   const plan =
     value &&
     typeof value === "object"
@@ -2186,38 +2411,173 @@ function normalizePlan(
 
   return {
     summary:
-      typeof plan.summary ===
-      "string"
+      typeof plan.summary === "string"
         ? plan.summary
         : "No summary provided.",
     analysis:
-      typeof plan.analysis ===
-      "string"
+      typeof plan.analysis === "string"
         ? plan.analysis
         : "",
     changes:
-      Array.isArray(
-        plan.changes
-      )
+      Array.isArray(plan.changes)
         ? plan.changes
         : [],
     verification:
-      Array.isArray(
-        plan.verification
-      )
+      Array.isArray(plan.verification)
         ? plan.verification
         : [],
     risk:
-      typeof plan.risk ===
-      "string"
+      typeof plan.risk === "string"
         ? plan.risk
         : "unknown"
   };
 }
 
-function normalizeChanges(
+function validatePlanAgainstTree(
+  plan,
+  tree
+) {
+  const normalized =
+    normalizePlan(plan);
+
+  const changes =
+    normalizePlanChanges(
+      normalized.changes
+    );
+
+  const entries =
+    new Map(
+      tree.map(
+        (entry) => [
+          entry.path,
+          entry
+        ]
+      )
+    );
+
+  for (const change of changes) {
+    const entry =
+      entries.get(change.path);
+
+    if (
+      change.operation ===
+      "update"
+    ) {
+      if (!entry) {
+        throw new Error(
+          `Plan tries to update a missing path: ${change.path}`
+        );
+      }
+
+      if (entry.type !== "blob") {
+        throw new Error(
+          `Plan tries to update a non-file path: ${change.path}`
+        );
+      }
+    }
+
+    if (
+      change.operation ===
+      "delete"
+    ) {
+      if (!entry) {
+        throw new Error(
+          `Plan tries to delete a missing path: ${change.path}`
+        );
+      }
+
+      if (entry.type !== "blob") {
+        throw new Error(
+          `Plan tries to delete a non-file path: ${change.path}`
+        );
+      }
+    }
+
+    if (
+      change.operation ===
+      "create"
+    ) {
+      if (entry) {
+        throw new Error(
+          `Plan tries to create an existing path: ${change.path}`
+        );
+      }
+    }
+  }
+
+  return {
+    ...normalized,
+    changes
+  };
+}
+
+function normalizePlanChanges(
   changes
 ) {
+  if (!Array.isArray(changes)) {
+    throw new Error(
+      "Gemini returned an invalid plan change list."
+    );
+  }
+
+  if (
+    changes.length >
+    MAX_CHANGES
+  ) {
+    throw new Error(
+      "The plan contains too many changes."
+    );
+  }
+
+  const result = [];
+  const seen = new Set();
+
+  for (const change of changes) {
+    if (
+      !change ||
+      typeof change !== "object"
+    ) {
+      throw new Error(
+        "The plan contains an invalid change."
+      );
+    }
+
+    const operation =
+      change.operation;
+
+    const path =
+      cleanString(change.path);
+
+    if (
+      ![
+        "update",
+        "create",
+        "delete"
+      ].includes(operation) ||
+      !isValidPath(path) ||
+      seen.has(path)
+    ) {
+      throw new Error(
+        `Invalid plan change: ${path || "unknown path"}`
+      );
+    }
+
+    seen.add(path);
+
+    result.push({
+      operation,
+      path,
+      reason:
+        typeof change.reason === "string"
+          ? change.reason
+          : ""
+    });
+  }
+
+  return result;
+}
+
+function normalizeChanges(changes) {
   if (!Array.isArray(changes)) {
     return null;
   }
@@ -2244,9 +2604,7 @@ function normalizeChanges(
       change.operation;
 
     const path =
-      cleanString(
-        change.path
-      );
+      cleanString(change.path);
 
     if (
       ![
@@ -2264,8 +2622,7 @@ function normalizeChanges(
 
     const sha =
       change.sha === null ||
-      typeof change.sha ===
-        "undefined"
+      typeof change.sha === "undefined"
         ? null
         : change.sha;
 
@@ -2300,8 +2657,7 @@ function normalizeChanges(
       operation === "create"
     ) {
       if (
-        typeof change.content !==
-          "string" ||
+        typeof change.content !== "string" ||
         change.content.length >
           MAX_FILE_SIZE
       ) {
@@ -2315,8 +2671,7 @@ function normalizeChanges(
     if (
       operation === "delete" &&
       change.content !== null &&
-      typeof change.content !==
-        "undefined"
+      typeof change.content !== "undefined"
     ) {
       return null;
     }
@@ -2327,8 +2682,7 @@ function normalizeChanges(
       sha,
       content,
       reason:
-        typeof change.reason ===
-        "string"
+        typeof change.reason === "string"
           ? change.reason
           : ""
     });
@@ -2339,7 +2693,8 @@ function normalizeChanges(
 
 function validateChanges(
   changes,
-  tree
+  tree,
+  plannedChanges = null
 ) {
   const normalized =
     normalizeChanges(changes);
@@ -2352,38 +2707,75 @@ function validateChanges(
 
   const existing =
     new Map(
-      tree
-        .filter(
-          (entry) =>
-            entry.type === "blob"
-        )
-        .map(
-          (entry) => [
-            entry.path,
-            entry.sha
-          ]
-        )
+      tree.map(
+        (entry) => [
+          entry.path,
+          entry
+        ]
+      )
     );
 
-  for (const change of normalized) {
-    const currentSha =
-      existing.get(
-        change.path
+  if (plannedChanges) {
+    const planned =
+      normalizePlanChanges(
+        plannedChanges
       );
+
+    if (
+      normalized.length !==
+      planned.length
+    ) {
+      throw new Error(
+        "Generated changes do not exactly match the approved plan."
+      );
+    }
+
+    const plannedMap =
+      new Map(
+        planned.map(
+          (change) => [
+            change.path,
+            change.operation
+          ]
+        )
+      );
+
+    for (const change of normalized) {
+      if (
+        plannedMap.get(
+          change.path
+        ) !== change.operation
+      ) {
+        throw new Error(
+          `Generated change is not allowed by the plan: ${change.path}`
+        );
+      }
+    }
+  }
+
+  for (const change of normalized) {
+    const current =
+      existing.get(change.path);
 
     if (
       change.operation ===
       "update"
     ) {
-      if (!currentSha) {
+      if (!current) {
         throw new Error(
-          `Cannot update non-existing file: ${change.path}`
+          `Cannot update non-existing path: ${change.path}`
+        );
+      }
+
+      if (current.type !== "blob") {
+        throw new Error(
+          `Cannot update non-file path: ${change.path}`
         );
       }
 
       if (
         change.sha !==
-        currentSha
+        current.sha
       ) {
         throw new Error(
           `File SHA mismatch in proposed update: ${change.path}`
@@ -2395,9 +2787,9 @@ function validateChanges(
       change.operation ===
       "create"
     ) {
-      if (currentSha) {
+      if (current) {
         throw new Error(
-          `Cannot create existing file: ${change.path}`
+          `Cannot create existing path: ${change.path}`
         );
       }
     }
@@ -2406,15 +2798,21 @@ function validateChanges(
       change.operation ===
       "delete"
     ) {
-      if (!currentSha) {
+      if (!current) {
         throw new Error(
-          `Cannot delete non-existing file: ${change.path}`
+          `Cannot delete non-existing path: ${change.path}`
+        );
+      }
+
+      if (current.type !== "blob") {
+        throw new Error(
+          `Cannot delete non-file path: ${change.path}`
         );
       }
 
       if (
         change.sha !==
-        currentSha
+        current.sha
       ) {
         throw new Error(
           `File SHA mismatch in proposed delete: ${change.path}`
@@ -2435,8 +2833,7 @@ function normalizeChangesForVerification(
 
   if (
     changes.length === 0 ||
-    changes.length >
-      MAX_CHANGES
+    changes.length > MAX_CHANGES
   ) {
     return null;
   }
@@ -2456,9 +2853,7 @@ function normalizeChangesForVerification(
       change.operation;
 
     const path =
-      cleanString(
-        change.path
-      );
+      cleanString(change.path);
 
     if (
       ![
@@ -2477,10 +2872,9 @@ function normalizeChangesForVerification(
     if (
       operation !== "delete" &&
       (
-        typeof change.content !==
-        "string" ||
+        typeof change.content !== "string" ||
         change.content.length >
-        MAX_FILE_SIZE
+          MAX_FILE_SIZE
       )
     ) {
       return null;
@@ -2499,7 +2893,9 @@ function normalizeChangesForVerification(
   return normalized;
 }
 
-/* PERMISSION CRYPTO */
+/* =========================================================
+   PERMISSION CRYPTO
+========================================================= */
 
 async function hashChanges(
   changes
@@ -2514,11 +2910,9 @@ async function hashChanges(
             path:
               change.path,
             sha:
-              change.sha ||
-              null,
+              change.sha || null,
             content:
-              change.content ??
-              null
+              change.content ?? null
           })
         )
         .sort(
@@ -2538,18 +2932,13 @@ async function hashChanges(
     );
 
   return Array.from(
-    new Uint8Array(
-      digest
-    )
+    new Uint8Array(digest)
   )
     .map(
       (byte) =>
         byte
           .toString(16)
-          .padStart(
-            2,
-            "0"
-          )
+          .padStart(2, "0")
     )
     .join("");
 }
@@ -2561,9 +2950,7 @@ async function createSignature(
   const key =
     await crypto.subtle.importKey(
       "raw",
-      new TextEncoder().encode(
-        secret
-      ),
+      new TextEncoder().encode(secret),
       {
         name: "HMAC",
         hash: "SHA-256"
@@ -2576,24 +2963,17 @@ async function createSignature(
     await crypto.subtle.sign(
       "HMAC",
       key,
-      new TextEncoder().encode(
-        value
-      )
+      new TextEncoder().encode(value)
     );
 
   return Array.from(
-    new Uint8Array(
-      signature
-    )
+    new Uint8Array(signature)
   )
     .map(
       (byte) =>
         byte
           .toString(16)
-          .padStart(
-            2,
-            "0"
-          )
+          .padStart(2, "0")
     )
     .join("");
 }
@@ -2614,9 +2994,7 @@ async function verifySignature(
   const key =
     await crypto.subtle.importKey(
       "raw",
-      new TextEncoder().encode(
-        secret
-      ),
+      new TextEncoder().encode(secret),
       {
         name: "HMAC",
         hash: "SHA-256"
@@ -2628,11 +3006,7 @@ async function verifySignature(
   const bytes =
     new Uint8Array(32);
 
-  for (
-    let i = 0;
-    i < 32;
-    i++
-  ) {
+  for (let i = 0; i < 32; i++) {
     bytes[i] =
       parseInt(
         expectedSignature.slice(
@@ -2647,9 +3021,7 @@ async function verifySignature(
     "HMAC",
     key,
     bytes,
-    new TextEncoder().encode(
-      value
-    )
+    new TextEncoder().encode(value)
   );
 }
 
@@ -2670,15 +3042,10 @@ function parsePermissionToken(
   }
 
   const id =
-    token.slice(
-      0,
-      separator
-    );
+    token.slice(0, separator);
 
   const signature =
-    token.slice(
-      separator + 1
-    );
+    token.slice(separator + 1);
 
   if (
     !/^[a-f0-9]{64}$/i.test(id) ||
@@ -2719,21 +3086,14 @@ function createPermissionId() {
   const bytes =
     new Uint8Array(32);
 
-  crypto.getRandomValues(
-    bytes
-  );
+  crypto.getRandomValues(bytes);
 
-  return Array.from(
-    bytes
-  )
+  return Array.from(bytes)
     .map(
       (byte) =>
         byte
           .toString(16)
-          .padStart(
-            2,
-            "0"
-          )
+          .padStart(2, "0")
     )
     .join("");
 }
@@ -2741,12 +3101,9 @@ function createPermissionId() {
 function getPermissionExpiration(
   mode
 ) {
-  return mode ===
-    "allow_once"
-    ? Date.now() +
-      5 * 60 * 1000
-    : Date.now() +
-      60 * 60 * 1000;
+  return mode === "allow_once"
+    ? Date.now() + 5 * 60 * 1000
+    : Date.now() + 60 * 60 * 1000;
 }
 
 function normalizePermissionMode(
@@ -2782,18 +3139,14 @@ function createPermissionCookie({
         expiresAt
       }),
       "utf8"
-    ).toString(
-      "base64url"
-    );
+    ).toString("base64url");
 
   const maxAge =
     Math.max(
       0,
       Math.floor(
-        (
-          expiresAt -
-          Date.now()
-        ) / 1000
+        (expiresAt - Date.now()) /
+        1000
       )
     );
 
@@ -2820,19 +3173,19 @@ function createExpiredPermissionCookie() {
   ].join("; ");
 }
 
-/* COMMON */
+/* =========================================================
+   COMMON
+========================================================= */
 
 function getCookie(
   request,
   name
 ) {
   const header =
-    request.headers?.cookie ||
-    "";
+    request.headers?.cookie || "";
 
   for (
-    const part of
-    header.split(";")
+    const part of header.split(";")
   ) {
     const index =
       part.indexOf("=");
@@ -2842,23 +3195,14 @@ function getCookie(
     }
 
     const key =
-      part
-        .slice(
-          0,
-          index
-        )
-        .trim();
+      part.slice(0, index).trim();
 
     if (key !== name) {
       continue;
     }
 
     const value =
-      part
-        .slice(
-          index + 1
-        )
-        .trim();
+      part.slice(index + 1).trim();
 
     try {
       return decodeURIComponent(
@@ -2885,8 +3229,7 @@ function parseBody(
   request
 ) {
   if (
-    typeof request.body ===
-      "object" &&
+    typeof request.body === "object" &&
     request.body !== null
   ) {
     return request.body;
@@ -2894,8 +3237,7 @@ function parseBody(
 
   try {
     return JSON.parse(
-      request.body ||
-        "{}"
+      request.body || "{}"
     );
   } catch {
     return null;
@@ -2905,8 +3247,7 @@ function parseBody(
 function cleanString(
   value
 ) {
-  return typeof value ===
-    "string"
+  return typeof value === "string"
     ? value.trim()
     : "";
 }
@@ -2924,12 +3265,8 @@ function validateRepositoryContext(
     cleanString(body.branch);
 
   if (
-    !isValidRepositoryName(
-      owner
-    ) ||
-    !isValidRepositoryName(
-      repo
-    )
+    !isValidRepositoryName(owner) ||
+    !isValidRepositoryName(repo)
   ) {
     return {
       ok: false,
@@ -2938,11 +3275,7 @@ function validateRepositoryContext(
     };
   }
 
-  if (
-    !isValidBranchName(
-      branch
-    )
-  ) {
+  if (!isValidBranchName(branch)) {
     return {
       ok: false,
       error:
@@ -2962,11 +3295,8 @@ function isValidRepositoryName(
   value
 ) {
   return (
-    typeof value ===
-      "string" &&
-    /^[A-Za-z0-9_.-]+$/.test(
-      value
-    ) &&
+    typeof value === "string" &&
+    /^[A-Za-z0-9_.-]+$/.test(value) &&
     value.length <= 100
   );
 }
@@ -2975,8 +3305,7 @@ function isValidBranchName(
   value
 ) {
   return (
-    typeof value ===
-      "string" &&
+    typeof value === "string" &&
     value.length > 0 &&
     value.length <= 255 &&
     !value.startsWith("/") &&
@@ -3000,17 +3329,14 @@ function isValidPath(
   value
 ) {
   return (
-    typeof value ===
-      "string" &&
+    typeof value === "string" &&
     value.length > 0 &&
     value.length <= 500 &&
     !value.startsWith("/") &&
     !value.endsWith("/") &&
     !value.includes("\\") &&
     !value.includes("\0") &&
-    !value
-      .split("/")
-      .includes("..")
+    !value.split("/").includes("..")
   );
 }
 
@@ -3018,11 +3344,8 @@ function isValidSha(
   value
 ) {
   return (
-    typeof value ===
-      "string" &&
-    /^[a-f0-9]{40}$/i.test(
-      value
-    )
+    typeof value === "string" &&
+    /^[a-f0-9]{40}$/i.test(value)
   );
 }
 
@@ -3031,8 +3354,7 @@ function methodNotAllowed(
 ) {
   return response.status(405).json({
     ok: false,
-    error:
-      "Method not allowed."
+    error: "Method not allowed."
   });
 }
 
@@ -3083,9 +3405,7 @@ function parsePermissionCookie(
       Buffer.from(
         raw,
         "base64url"
-      ).toString(
-        "utf8"
-      )
+      ).toString("utf8")
     );
   } catch {
     return null;
@@ -3139,4 +3459,4 @@ async function getCommit(
       sha
     )}`
   );
-                       }
+                      }
