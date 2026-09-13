@@ -196,7 +196,7 @@ async function handlePlan(
     });
   }
 
-  const model =
+  const selection =
     await chooseGeminiModel(
       apiKey,
       body.model
@@ -205,7 +205,7 @@ async function handlePlan(
   const generated =
     await generateGeminiJson({
       apiKey,
-      model,
+      selection,
       prompt:
         buildPlanPrompt({
           message,
@@ -216,7 +216,7 @@ async function handlePlan(
     });
 
   const plan =
-    normalizePlan(generated);
+    normalizePlan(generated.value);
 
   const validatedPlan =
     validatePlanAgainstTree(
@@ -227,6 +227,7 @@ async function handlePlan(
   return response.status(200).json({
     ok: true,
     operation: "plan",
+    model: generated.model,
     requiresWrite:
       validatedPlan.changes.length > 0,
     changes:
@@ -366,7 +367,7 @@ async function handleChanges(
     });
   }
 
-  const model =
+  const selection =
     await chooseGeminiModel(
       apiKey,
       body.model
@@ -375,7 +376,7 @@ async function handleChanges(
   const generated =
     await generateGeminiJson({
       apiKey,
-      model,
+      selection,
       prompt:
         buildChangesPrompt({
           message,
@@ -388,7 +389,7 @@ async function handleChanges(
 
   const changes =
     validateChanges(
-      generated?.changes,
+      generated?.value?.changes,
       tree,
       plan.changes
     );
@@ -396,17 +397,17 @@ async function handleChanges(
   return response.status(200).json({
     ok: true,
     operation: "changes",
-    model,
+    model: generated.model,
     summary:
-      typeof generated?.summary === "string"
-        ? generated.summary
+      typeof generated?.value?.summary === "string"
+        ? generated.value.summary
         : "Changes generated.",
     changes,
     verification:
       Array.isArray(
-        generated?.verification
+        generated?.value?.verification
       )
-        ? generated.verification
+        ? generated.value.verification
         : []
   });
 }
@@ -933,23 +934,23 @@ async function handleChat(
     });
   }
 
-  const model =
+  const selection =
     await chooseGeminiModel(
       apiKey,
       body.model
     );
 
-  const result =
+  const generated =
     await generateGeminiText({
       apiKey,
-      model,
+      selection,
       prompt: message
     });
 
   return response.status(200).json({
     ok: true,
-    model,
-    response: result
+    model: generated.model,
+    response: generated.text
   });
 }
 
@@ -1824,6 +1825,137 @@ async function listGeminiModels(
   );
 }
 
+function geminiModelScore(
+  model
+) {
+  const name =
+    `${model?.name || ""} ${
+      model?.displayName || ""
+    } ${
+      model?.description || ""
+    }`.toLowerCase();
+
+  let score = 0;
+
+  const inputLimit =
+    Number(model?.inputTokenLimit) || 0;
+
+  const outputLimit =
+    Number(model?.outputTokenLimit) || 0;
+
+  if (inputLimit > 0) {
+    score += 10;
+  }
+
+  if (outputLimit > 0) {
+    score += Math.min(
+      50,
+      Math.log2(
+        Math.max(
+          outputLimit,
+          1
+        )
+      )
+    );
+  }
+
+  /*
+   * Prefer general-purpose text-generation
+   * families without hard-coding any exact
+   * model name.
+   */
+  if (name.includes("flash")) {
+    score += 35;
+  }
+
+  if (name.includes("pro")) {
+    score += 30;
+  }
+
+  /*
+   * Some catalog entries can technically expose
+   * generateContent while not being ideal for an
+   * interactive coding agent.
+   */
+  if (
+    name.includes("embedding") ||
+    name.includes("aqa")
+  ) {
+    score -= 1000;
+  }
+
+  if (
+    name.includes("tts") ||
+    name.includes("speech")
+  ) {
+    score -= 500;
+  }
+
+  if (
+    name.includes("image")
+  ) {
+    score -= 500;
+  }
+
+  if (
+    name.includes("experimental") ||
+    name.includes("-exp")
+  ) {
+    score -= 25;
+  }
+
+  if (
+    name.includes("preview")
+  ) {
+    score -= 10;
+  }
+
+  return score;
+}
+
+function rankGeminiModels(
+  models
+) {
+  return [...models].sort(
+    (a, b) => {
+      const scoreA =
+        geminiModelScore(a);
+
+      const scoreB =
+        geminiModelScore(b);
+
+      if (scoreA !== scoreB) {
+        return scoreB - scoreA;
+      }
+
+      const outputA =
+        Number(a.outputTokenLimit) || 0;
+
+      const outputB =
+        Number(b.outputTokenLimit) || 0;
+
+      if (outputA !== outputB) {
+        return outputB - outputA;
+      }
+
+      const inputA =
+        Number(a.inputTokenLimit) || 0;
+
+      const inputB =
+        Number(b.inputTokenLimit) || 0;
+
+      if (inputA !== inputB) {
+        return inputB - inputA;
+      }
+
+      return String(a.name)
+        .localeCompare(
+          String(b.name)
+        );
+    }
+  );
+}
+
 async function chooseGeminiModel(
   apiKey,
   requestedModel
@@ -1853,48 +1985,215 @@ async function chooseGeminiModel(
       );
     }
 
-    return selected.name;
+    return {
+      mode: "manual",
+      candidates: [
+        selected.name
+      ]
+    };
   }
 
-  return [...models].sort(
-    (a, b) => {
-      const outputA =
-        Number(a.outputTokenLimit) || 0;
+  const ranked =
+    rankGeminiModels(models);
 
-      const outputB =
-        Number(b.outputTokenLimit) || 0;
-
-      if (outputA !== outputB) {
-        return outputB - outputA;
-      }
-
-      return a.name.localeCompare(
-        b.name
+  const candidates =
+    ranked
+      .map(
+        (model) =>
+          model.name
+      )
+      .filter(
+        (name) =>
+          typeof name === "string" &&
+          name.length > 0
       );
+
+  if (!candidates.length) {
+    throw new Error(
+      "No usable Gemini model is available for Auto selection."
+    );
+  }
+
+  return {
+    mode: "auto",
+    candidates
+  };
+}
+
+function normalizeGeminiSelection(
+  selection
+) {
+  if (
+    typeof selection === "string" &&
+    selection
+  ) {
+    return {
+      mode: "manual",
+      candidates: [
+        selection
+      ]
+    };
+  }
+
+  if (
+    selection &&
+    typeof selection === "object" &&
+    Array.isArray(
+      selection.candidates
+    )
+  ) {
+    const candidates =
+      selection.candidates.filter(
+        (model) =>
+          typeof model === "string" &&
+          model.length > 0
+      );
+
+    if (candidates.length) {
+      return {
+        mode:
+          selection.mode === "auto"
+            ? "auto"
+            : "manual",
+        candidates
+      };
     }
-  )[0].name;
+  }
+
+  throw new Error(
+    "No valid Gemini model selection was provided."
+  );
 }
 
 async function generateGeminiJson({
   apiKey,
-  model,
+  selection,
   prompt
 }) {
-  const output =
-    await callGemini({
-      apiKey,
-      model,
-      prompt,
-      json: true
-    });
-
-  try {
-    return parseGeminiJson(output);
-  } catch {
-    throw new Error(
-      "Gemini returned invalid JSON."
+  const normalized =
+    normalizeGeminiSelection(
+      selection
     );
+
+  let lastError = null;
+
+  for (
+    const model of normalized.candidates
+  ) {
+    try {
+      const output =
+        await callGemini({
+          apiKey,
+          model,
+          prompt,
+          json: true
+        });
+
+      try {
+        const value =
+          parseGeminiJson(output);
+
+        return {
+          value,
+          model
+        };
+      } catch (error) {
+        lastError = new Error(
+          "Gemini returned invalid JSON."
+        );
+      }
+    } catch (error) {
+      lastError = error;
+
+      /*
+       * Some dynamically discovered models may
+       * support generateContent but reject the
+       * JSON response MIME configuration.
+       *
+       * Auto mode gets one compatibility retry
+       * without responseMimeType and then parses
+       * the returned JSON itself.
+       */
+      if (
+        normalized.mode === "auto" &&
+        isGeminiJsonConfigurationError(
+          error
+        )
+      ) {
+        try {
+          const output =
+            await callGemini({
+              apiKey,
+              model,
+              prompt,
+              json: false
+            });
+
+          const value =
+            parseGeminiJson(output);
+
+          return {
+            value,
+            model
+          };
+        } catch (fallbackError) {
+          lastError =
+            fallbackError;
+        }
+      }
+    }
+
+    /*
+     * Manual model selection preserves the
+     * previous behavior: do not silently switch
+     * to another model.
+     */
+    if (
+      normalized.mode !== "auto"
+    ) {
+      break;
+    }
   }
+
+  throw (
+    lastError ||
+    new Error(
+      "All automatically selected Gemini models failed."
+    )
+  );
+}
+
+function isGeminiJsonConfigurationError(
+  error
+) {
+  const message =
+    String(
+      error?.message || ""
+    ).toLowerCase();
+
+  return (
+    message.includes(
+      "responsemimetype"
+    ) ||
+    message.includes(
+      "response mime"
+    ) ||
+    message.includes(
+      "response_mime_type"
+    ) ||
+    message.includes(
+      "json schema"
+    ) ||
+    message.includes(
+      "mime type"
+    ) ||
+    message.includes(
+      "unsupported"
+    ) ||
+    message.includes(
+      "invalid argument"
+    )
+  );
 }
 
 function parseGeminiJson(
@@ -1943,15 +2242,54 @@ function parseGeminiJson(
 
 async function generateGeminiText({
   apiKey,
-  model,
+  selection,
   prompt
 }) {
-  return callGemini({
-    apiKey,
-    model,
-    prompt,
-    json: false
-  });
+  const normalized =
+    normalizeGeminiSelection(
+      selection
+    );
+
+  let lastError = null;
+
+  for (
+    const model of normalized.candidates
+  ) {
+    try {
+      const text =
+        await callGemini({
+          apiKey,
+          model,
+          prompt,
+          json: false
+        });
+
+      return {
+        text,
+        model
+      };
+    } catch (error) {
+      lastError = error;
+    }
+
+    /*
+     * Manual model selection preserves the
+     * selected model and does not silently fall
+     * back to another model.
+     */
+    if (
+      normalized.mode !== "auto"
+    ) {
+      break;
+    }
+  }
+
+  throw (
+    lastError ||
+    new Error(
+      "All automatically selected Gemini models failed."
+    )
+  );
 }
 
 async function callGemini({
@@ -1961,10 +2299,16 @@ async function callGemini({
   json
 }) {
   const modelId =
-    model.replace(
+    String(model || "").replace(
       /^models\//,
       ""
     );
+
+  if (!modelId) {
+    throw new Error(
+      "Gemini model is missing."
+    );
+  }
 
   const generationConfig = {
     temperature:
@@ -2138,7 +2482,7 @@ async function generateInspectionAnswer({
   }
 
   try {
-    const model =
+    const selection =
       await chooseGeminiModel(
         apiKey,
         "auto"
@@ -2172,15 +2516,18 @@ async function generateInspectionAnswer({
       "Clearly state that no files were modified."
     ].join("\n");
 
-    const answer =
+    const generated =
       await generateGeminiText({
         apiKey,
-        model,
+        selection,
         prompt
       });
 
-    if (answer.trim()) {
-      return answer.trim();
+    if (
+      generated.text &&
+      generated.text.trim()
+    ) {
+      return generated.text.trim();
     }
   } catch (error) {
     console.error(
@@ -3459,4 +3806,4 @@ async function getCommit(
       sha
     )}`
   );
-                      }
+}
