@@ -585,6 +585,44 @@ async function sendChatMessage() {
     return;
   }
 
+  if (!state.githubConnected) {
+    appendMessage(
+      "error",
+      "GitHub is not connected. Connect GitHub before using the coding agent."
+    );
+    return;
+  }
+
+  if (!state.selectedRepository) {
+    appendMessage(
+      "error",
+      "Select a GitHub repository first."
+    );
+    return;
+  }
+
+  if (!state.selectedBranch) {
+    appendMessage(
+      "error",
+      "Select a GitHub branch first."
+    );
+    return;
+  }
+
+  const repositoryParts =
+    state.selectedRepository.split("/");
+
+  if (repositoryParts.length !== 2) {
+    appendMessage(
+      "error",
+      "The selected GitHub repository is invalid."
+    );
+    return;
+  }
+
+  const [owner, repo] =
+    repositoryParts;
+
   appendMessage(
     "user",
     message
@@ -593,24 +631,30 @@ async function sendChatMessage() {
   elements.chatInput.value = "";
 
   setBusy(true);
+
   appendProgress(
-    "Thinking..."
+    "Inspecting repository..."
   );
 
   try {
     const response = await fetch(
-      "/api/gemini/generate",
+      "/api/agent/chat",
       {
         method: "POST",
         headers: {
           "Content-Type":
             "application/json",
-          Accept: "application/json"
+          Accept:
+            "application/json"
         },
         body: JSON.stringify({
           message,
           model:
-            state.selectedModel
+            state.selectedModel,
+          owner,
+          repo,
+          branch:
+            state.selectedBranch
         })
       }
     );
@@ -626,7 +670,7 @@ async function sendChatMessage() {
     ) {
       throw new Error(
         data?.error ||
-          "Gemini generation failed."
+          "The coding agent could not complete the request."
       );
     }
 
@@ -647,32 +691,58 @@ async function sendChatMessage() {
       );
     }
 
-    state.geminiConnected = true;
+    if (
+      data.context &&
+      Array.isArray(
+        data.context.relevantFiles
+      ) &&
+      data.context.relevantFiles.length
+    ) {
+      appendMessage(
+        "system",
+        `Repository context inspected: ${data.context.relevantFiles.join(", ")}`
+      );
+    }
+
+    state.geminiConnected =
+      true;
 
     setGeminiStatus(
       "connected"
     );
+
+    updateRepositoryStatus();
   } catch (error) {
     removeProgress();
 
     console.error(
-      "Chat generation failed:",
+      "Agent request failed:",
       error
     );
 
     appendMessage(
       "error",
       error.message ||
-        "Could not generate a response."
+        "The coding agent could not complete the request."
     );
 
-    state.geminiConnected = false;
+    if (
+      error.message?.toLowerCase()
+        .includes("github")
+    ) {
+      setGitHubStatus(
+        "error"
+      );
+    } else {
+      state.geminiConnected =
+        false;
 
-    setGeminiStatus(
-      state.geminiConfigured
-        ? "error"
-        : "not-configured"
-    );
+      setGeminiStatus(
+        state.geminiConfigured
+          ? "error"
+          : "not-configured"
+      );
+    }
   } finally {
     setBusy(false);
   }
@@ -1706,4 +1776,4 @@ async function readJson(
       `Server returned invalid JSON (HTTP ${response.status}).`
     );
   }
-      }
+  }
