@@ -1,5 +1,6 @@
 import { state } from "./state.js";
 import { elements } from "./dom.js";
+
 import {
   setBusy,
   setGeminiStatus,
@@ -24,9 +25,9 @@ export async function refreshGeminiStatus() {
       !response.ok ||
       !data?.ok
     ) {
-      throw new Error(
-        data?.error ||
-          "Could not check Gemini configuration."
+      throw createResponseError(
+        data,
+        "Could not check Gemini configuration."
       );
     }
 
@@ -78,9 +79,9 @@ export async function testGeminiConnection() {
       !response.ok ||
       !data?.ok
     ) {
-      throw new Error(
-        data?.error ||
-          "Gemini connection test failed."
+      throw createResponseError(
+        data,
+        "Gemini connection test failed."
       );
     }
 
@@ -108,8 +109,10 @@ export async function testGeminiConnection() {
     );
 
     showGlobalMessage(
-      error.message ||
-        "Gemini connection test failed.",
+      getErrorMessage(
+        error,
+        "Gemini connection test failed."
+      ),
       "error"
     );
   } finally {
@@ -141,9 +144,9 @@ export async function refreshModels() {
       !response.ok ||
       !data?.ok
     ) {
-      throw new Error(
-        data?.error ||
-          "Could not load Gemini models."
+      throw createResponseError(
+        data,
+        "Could not load Gemini models."
       );
     }
 
@@ -259,4 +262,63 @@ async function readJson(response) {
       `Server returned invalid JSON (${response.status}).`
     );
   }
+}
+
+function createResponseError(
+  data,
+  fallbackMessage
+) {
+  const message =
+    getErrorMessage(
+      data?.error,
+      fallbackMessage
+    );
+
+  return new Error(message);
+}
+
+function getErrorMessage(
+  value,
+  fallbackMessage
+) {
+  if (
+    typeof value === "string" &&
+    value.trim()
+  ) {
+    return value;
+  }
+
+  if (
+    value &&
+    typeof value === "object"
+  ) {
+    if (
+      typeof value.message === "string" &&
+      value.message.trim()
+    ) {
+      return value.message;
+    }
+
+    if (
+      typeof value.error === "string" &&
+      value.error.trim()
+    ) {
+      return value.error;
+    }
+
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return fallbackMessage;
+    }
+  }
+
+  if (
+    value !== undefined &&
+    value !== null
+  ) {
+    return String(value);
+  }
+
+  return fallbackMessage;
 }
