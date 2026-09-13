@@ -72,9 +72,7 @@ export async function handleAgentRoute(
   }
 }
 
-/* -------------------------------------------------------------------------- */
-/* PLAN                                                                      */
-/* -------------------------------------------------------------------------- */
+/* PLAN */
 
 async function handlePlan(
   request,
@@ -134,10 +132,6 @@ async function handlePlan(
       context.branch
     );
 
-  /*
-   * Read-only inspection is deliberately handled without asking Gemini
-   * to invent a plan. The repository itself is inspected first.
-   */
   if (
     isReadOnlyInspectionRequest(
       message
@@ -207,25 +201,21 @@ async function handlePlan(
       body.model
     );
 
-  const prompt =
-    buildPlanPrompt({
-      message,
-      context,
-      tree,
-      files
-    });
-
   const generated =
     await generateGeminiJson({
       apiKey,
       model,
-      prompt
+      prompt:
+        buildPlanPrompt({
+          message,
+          context,
+          tree,
+          files
+        })
     });
 
   const plan =
-    normalizePlan(
-      generated
-    );
+    normalizePlan(generated);
 
   return response.status(200).json({
     ok: true,
@@ -238,9 +228,7 @@ async function handlePlan(
   });
 }
 
-/* -------------------------------------------------------------------------- */
-/* CHANGES                                                                   */
-/* -------------------------------------------------------------------------- */
+/* CHANGES */
 
 async function handleChanges(
   request,
@@ -279,12 +267,9 @@ async function handleChanges(
     );
   }
 
-  const plan =
-    body.plan;
-
   if (
-    !plan ||
-    typeof plan !== "object"
+    !body.plan ||
+    typeof body.plan !== "object"
   ) {
     return badRequest(
       response,
@@ -337,23 +322,21 @@ async function handleChanges(
       body.model
     );
 
-  const prompt =
-    buildChangesPrompt({
-      message,
-      context,
-      plan,
-      tree,
-      files
-    });
-
   const generated =
     await generateGeminiJson({
       apiKey,
       model,
-      prompt
+      prompt:
+        buildChangesPrompt({
+          message,
+          context,
+          plan: body.plan,
+          tree,
+          files
+        })
     });
 
-  const validated =
+  const changes =
     validateChanges(
       generated?.changes,
       tree
@@ -364,24 +347,20 @@ async function handleChanges(
     operation: "changes",
     model,
     summary:
-      typeof generated.summary ===
-      "string"
+      typeof generated?.summary === "string"
         ? generated.summary
         : "Changes generated.",
-    changes:
-      validated,
+    changes,
     verification:
       Array.isArray(
-        generated.verification
+        generated?.verification
       )
         ? generated.verification
         : []
   });
 }
 
-/* -------------------------------------------------------------------------- */
-/* PERMISSION                                                                */
-/* -------------------------------------------------------------------------- */
+/* PERMISSION */
 
 async function handlePermission(
   request,
@@ -459,12 +438,6 @@ async function handlePermission(
   const changesHash =
     await hashChanges(changes);
 
-  const id =
-    createPermissionId();
-
-  const expiresAt =
-    getPermissionExpiration(mode);
-
   if (mode === "deny") {
     response.setHeader(
       "Set-Cookie",
@@ -484,6 +457,12 @@ async function handlePermission(
       changesHash
     });
   }
+
+  const id =
+    createPermissionId();
+
+  const expiresAt =
+    getPermissionExpiration(mode);
 
   const payload =
     buildPermissionPayload({
@@ -534,9 +513,7 @@ async function handlePermission(
   });
 }
 
-/* -------------------------------------------------------------------------- */
-/* APPLY                                                                     */
-/* -------------------------------------------------------------------------- */
+/* APPLY */
 
 async function handleApply(
   request,
@@ -579,11 +556,12 @@ async function handleApply(
   }
 
   const changes =
-    normalizeChanges(
-      body.changes
-    );
+    normalizeChanges(body.changes);
 
-  if (!changes) {
+  if (
+    !changes ||
+    changes.length === 0
+  ) {
     return badRequest(
       response,
       "Invalid or empty change set."
@@ -608,9 +586,7 @@ async function handleApply(
     );
 
   if (!permission.ok) {
-    if (
-      permission.expired
-    ) {
+    if (permission.expired) {
       clearPermissionCookie(
         response
       );
@@ -635,10 +611,6 @@ async function handleApply(
       changes
     });
 
-  /*
-   * allow_once permission is consumed after the successful GitHub write.
-   * allow_for_task remains valid until its expiry.
-   */
   if (
     permission.mode ===
     "allow_once"
@@ -667,9 +639,7 @@ async function handleApply(
   });
 }
 
-/* -------------------------------------------------------------------------- */
-/* VERIFY                                                                    */
-/* -------------------------------------------------------------------------- */
+/* VERIFY */
 
 async function handleVerify(
   request,
@@ -701,9 +671,7 @@ async function handleVerify(
   const commitSha =
     cleanString(body.commitSha);
 
-  if (
-    !isValidSha(commitSha)
-  ) {
+  if (!isValidSha(commitSha)) {
     return badRequest(
       response,
       "Invalid commit SHA."
@@ -762,9 +730,7 @@ async function handleVerify(
   const verifiedFiles = [];
   const failedFiles = [];
 
-  for (
-    const change of changes
-  ) {
+  for (const change of changes) {
     const file =
       await getFileAtRef({
         accessToken,
@@ -866,9 +832,7 @@ async function handleVerify(
   });
 }
 
-/* -------------------------------------------------------------------------- */
-/* CHAT                                                                      */
-/* -------------------------------------------------------------------------- */
+/* CHAT */
 
 async function handleChat(
   request,
@@ -928,57 +892,7 @@ async function handleChat(
   });
 }
 
-/* -------------------------------------------------------------------------- */
-/* GITHUB READ HELPERS                                                       */
-/* -------------------------------------------------------------------------- */
-
-async function githubGet(
-  accessToken,
-  path
-) {
-  const result =
-    await fetch(
-      `${GITHUB_API}${path}`,
-      {
-        method: "GET",
-        headers: {
-          Accept:
-            "application/vnd.github+json",
-          Authorization:
-            `Bearer ${accessToken}`,
-          "X-GitHub-Api-Version":
-            GITHUB_API_VERSION
-        }
-      }
-    );
-
-  const text =
-    await result.text();
-
-  let data = null;
-
-  try {
-    data =
-      text ? JSON.parse(text) : null;
-  } catch {
-    data = null;
-  }
-
-  if (!result.ok) {
-    const error =
-      new Error(
-        data?.message ||
-          "GitHub API request failed."
-      );
-
-    error.status =
-      result.status;
-
-    throw error;
-  }
-
-  return data;
-}
+/* GITHUB */
 
 async function githubRequest(
   accessToken,
@@ -1007,7 +921,8 @@ async function githubRequest(
         },
         ...(options.body
           ? {
-              body: options.body
+              body:
+                options.body
             }
           : {})
       }
@@ -1039,6 +954,16 @@ async function githubRequest(
   }
 
   return data;
+}
+
+async function githubGet(
+  accessToken,
+  path
+) {
+  return githubRequest(
+    accessToken,
+    path
+  );
 }
 
 async function loadRepositoryTree(
@@ -1098,7 +1023,7 @@ async function getFileAtRef({
   ref
 }) {
   try {
-    const encodedPath =
+    const encoded =
       path
         .split("/")
         .map(
@@ -1113,7 +1038,7 @@ async function getFileAtRef({
           owner
         )}/${encodeURIComponent(
           repo
-        )}/contents/${encodedPath}?ref=${encodeURIComponent(
+        )}/contents/${encoded}?ref=${encodeURIComponent(
           ref
         )}`
       );
@@ -1135,7 +1060,9 @@ async function getFileAtRef({
           ""
         ),
         "base64"
-      ).toString("utf8");
+      ).toString(
+        "utf8"
+      );
 
     return {
       path,
@@ -1149,9 +1076,7 @@ async function getFileAtRef({
           : content.length
     };
   } catch (error) {
-    if (
-      error.status === 404
-    ) {
+    if (error.status === 404) {
       return null;
     }
 
@@ -1171,8 +1096,7 @@ async function loadRelevantFiles(
     tree
       .filter(
         (entry) =>
-          entry.type ===
-          "blob"
+          entry.type === "blob"
       )
       .sort(
         (a, b) =>
@@ -1183,9 +1107,7 @@ async function loadRelevantFiles(
 
   const files = [];
 
-  for (
-    const entry of preferred
-  ) {
+  for (const entry of preferred) {
     if (
       Number(entry.size) >
       MAX_FILE_SIZE
@@ -1230,51 +1152,31 @@ function filePriority(
     return 90;
   }
 
-  if (
-    lower.includes(
-      "config"
-    )
-  ) {
+  if (lower.includes("config")) {
     return 70;
   }
 
   if (
-    lower.includes(
-      "api/"
-    ) ||
-    lower.includes(
-      "server/"
-    )
+    lower.includes("api/") ||
+    lower.includes("server/")
   ) {
     return 65;
   }
 
   if (
-    lower.endsWith(
-      ".js"
-    ) ||
-    lower.endsWith(
-      ".ts"
-    )
+    lower.endsWith(".js") ||
+    lower.endsWith(".ts")
   ) {
     return 55;
   }
 
-  if (
-    lower.endsWith(
-      ".json"
-    )
-  ) {
+  if (lower.endsWith(".json")) {
     return 50;
   }
 
   if (
-    lower.endsWith(
-      ".html"
-    ) ||
-    lower.endsWith(
-      ".css"
-    )
+    lower.endsWith(".html") ||
+    lower.endsWith(".css")
   ) {
     return 45;
   }
@@ -1282,9 +1184,7 @@ function filePriority(
   return 10;
 }
 
-/* -------------------------------------------------------------------------- */
-/* GITHUB COMMIT                                                             */
-/* -------------------------------------------------------------------------- */
+/* GITHUB COMMIT */
 
 async function applyGitDataCommit({
   accessToken,
@@ -1294,62 +1194,39 @@ async function applyGitDataCommit({
   message,
   changes
 }) {
-  const ref =
-    await githubGet(
-      accessToken,
-      `/repos/${encodeURIComponent(
-        owner
-      )}/${encodeURIComponent(
-        repo
-      )}/git/ref/heads/${encodeURIComponent(
-        branch
-      )}`
-    );
-
   const headSha =
-    ref?.object?.sha;
-
-  if (
-    !isValidSha(headSha)
-  ) {
-    throw new Error(
-      "Could not determine the current branch head."
+    await getBranchHead(
+      accessToken,
+      owner,
+      repo,
+      branch
     );
-  }
 
   const commit =
-    await githubGet(
+    await getCommit(
       accessToken,
-      `/repos/${encodeURIComponent(
-        owner
-      )}/${encodeURIComponent(
-        repo
-      )}/git/commits/${encodeURIComponent(
-        headSha
-      )}`
+      owner,
+      repo,
+      headSha
     );
 
   const baseTreeSha =
     commit?.tree?.sha;
 
-  if (
-    !isValidSha(baseTreeSha)
-  ) {
+  if (!isValidSha(baseTreeSha)) {
     throw new Error(
       "Could not determine the current Git tree."
     );
   }
 
-  const treeEntries = [];
+  const tree = [];
 
-  for (
-    const change of changes
-  ) {
+  for (const change of changes) {
     if (
       change.operation ===
       "delete"
     ) {
-      treeEntries.push({
+      tree.push({
         path:
           change.path,
         mode: "100644",
@@ -1379,27 +1256,22 @@ async function applyGitDataCommit({
         }
       );
 
-    if (
-      !isValidSha(
-        blob?.sha
-      )
-    ) {
+    if (!isValidSha(blob?.sha)) {
       throw new Error(
         `GitHub did not return a valid blob SHA for ${change.path}.`
       );
     }
 
-    treeEntries.push({
+    tree.push({
       path:
         change.path,
       mode: "100644",
       type: "blob",
-      sha:
-        blob.sha
+      sha: blob.sha
     });
   }
 
-  const tree =
+  const newTree =
     await githubRequest(
       accessToken,
       `/repos/${encodeURIComponent(
@@ -1412,17 +1284,12 @@ async function applyGitDataCommit({
         body: JSON.stringify({
           base_tree:
             baseTreeSha,
-          tree:
-            treeEntries
+          tree
         })
       }
     );
 
-  if (
-    !isValidSha(
-      tree?.sha
-    )
-  ) {
+  if (!isValidSha(newTree?.sha)) {
     throw new Error(
       "GitHub did not return a valid new tree."
     );
@@ -1441,7 +1308,7 @@ async function applyGitDataCommit({
         body: JSON.stringify({
           message,
           tree:
-            tree.sha,
+            newTree.sha,
           parents: [
             headSha
           ]
@@ -1449,16 +1316,17 @@ async function applyGitDataCommit({
       }
     );
 
-  if (
-    !isValidSha(
-      newCommit?.sha
-    )
-  ) {
+  if (!isValidSha(newCommit?.sha)) {
     throw new Error(
       "GitHub did not return a valid new commit."
     );
   }
 
+  /*
+   * Optimistic concurrency:
+   * GitHub will reject this non-force update if the branch
+   * moved after we read headSha.
+   */
   const updated =
     await githubRequest(
       accessToken,
@@ -1495,59 +1363,22 @@ async function applyGitDataCommit({
   };
 }
 
-/* -------------------------------------------------------------------------- */
-/* PERMISSION VALIDATION                                                     */
-/* -------------------------------------------------------------------------- */
+/* PERMISSION */
 
 async function validatePermission(
   request,
   context,
   changes
 ) {
-  const raw =
-    getCookie(
-      request,
-      PERMISSION_COOKIE
-    );
+  const permission =
+    parsePermissionCookie(request);
 
-  if (!raw) {
+  if (!permission) {
     return {
       ok: false,
       status: 403,
       error:
         "No valid agent permission is available."
-    };
-  }
-
-  let permission;
-
-  try {
-    permission =
-      JSON.parse(
-        Buffer.from(
-          raw,
-          "base64url"
-        ).toString("utf8")
-      );
-  } catch {
-    return {
-      ok: false,
-      status: 403,
-      error:
-        "Agent permission token is invalid."
-    };
-  }
-
-  if (
-    !permission ||
-    typeof permission !==
-      "object"
-  ) {
-    return {
-      ok: false,
-      status: 403,
-      error:
-        "Agent permission token is invalid."
     };
   }
 
@@ -1564,8 +1395,11 @@ async function validatePermission(
   }
 
   if (
+    !Number.isFinite(
+      permission.expiresAt
+    ) ||
     permission.expiresAt <=
-    Date.now()
+      Date.now()
   ) {
     return {
       ok: false,
@@ -1606,10 +1440,20 @@ async function validatePermission(
     };
   }
 
+  const normalized =
+    normalizeChanges(changes);
+
+  if (!normalized) {
+    return {
+      ok: false,
+      status: 403,
+      error:
+        "The requested change set is invalid."
+    };
+  }
+
   const changesHash =
-    await hashChanges(
-      changes
-    );
+    await hashChanges(normalized);
 
   if (
     changesHash !==
@@ -1623,12 +1467,12 @@ async function validatePermission(
     };
   }
 
-  const token =
+  const parsed =
     parsePermissionToken(
       permission.token
     );
 
-  if (!token) {
+  if (!parsed) {
     return {
       ok: false,
       status: 403,
@@ -1652,7 +1496,7 @@ async function validatePermission(
 
   const payload =
     buildPermissionPayload({
-      id: token.id,
+      id: parsed.id,
       mode:
         permission.mode,
       owner:
@@ -1670,7 +1514,7 @@ async function validatePermission(
     await verifySignature(
       secret,
       payload,
-      token.signature
+      parsed.signature
     );
 
   if (!valid) {
@@ -1689,67 +1533,113 @@ async function validatePermission(
   };
 }
 
-/* -------------------------------------------------------------------------- */
-/* GEMINI                                                                    */
-/* -------------------------------------------------------------------------- */
+/* GEMINI */
+
+async function listGeminiModels(
+  apiKey
+) {
+  const models = [];
+  let pageToken = "";
+
+  do {
+    const url =
+      new URL(
+        `${GEMINI_API}/models`
+      );
+
+    url.searchParams.set(
+      "key",
+      apiKey
+    );
+
+    url.searchParams.set(
+      "pageSize",
+      "1000"
+    );
+
+    if (pageToken) {
+      url.searchParams.set(
+        "pageToken",
+        pageToken
+      );
+    }
+
+    const result =
+      await fetch(url);
+
+    const text =
+      await result.text();
+
+    let data = null;
+
+    try {
+      data =
+        text
+          ? JSON.parse(text)
+          : null;
+    } catch {
+      data = null;
+    }
+
+    if (!result.ok) {
+      throw new Error(
+        data?.error?.message ||
+          "Could not load Gemini models."
+      );
+    }
+
+    if (
+      Array.isArray(
+        data?.models
+      )
+    ) {
+      for (
+        const model of data.models
+      ) {
+        if (
+          typeof model?.name !==
+            "string" ||
+          !Array.isArray(
+            model.supportedGenerationMethods
+          ) ||
+          !model.supportedGenerationMethods.includes(
+            "generateContent"
+          )
+        ) {
+          continue;
+        }
+
+        models.push(model);
+      }
+    }
+
+    pageToken =
+      typeof data?.nextPageToken ===
+      "string"
+        ? data.nextPageToken
+        : "";
+  } while (pageToken);
+
+  return Array.from(
+    new Map(
+      models.map(
+        (model) => [
+          model.name,
+          model
+        ]
+      )
+    ).values()
+  );
+}
 
 async function chooseGeminiModel(
   apiKey,
   requestedModel
 ) {
-  const url =
-    new URL(
-      `${GEMINI_API}/models`
-    );
-
-  url.searchParams.set(
-    "key",
-    apiKey
-  );
-
-  url.searchParams.set(
-    "pageSize",
-    "1000"
-  );
-
-  const result =
-    await fetch(url);
-
-  const text =
-    await result.text();
-
-  let data = null;
-
-  try {
-    data =
-      text ? JSON.parse(text) : null;
-  } catch {
-    data = null;
-  }
-
-  if (!result.ok) {
-    throw new Error(
-      data?.error?.message ||
-        "Could not load Gemini models."
-    );
-  }
-
   const models =
-    Array.isArray(
-      data?.models
-    )
-      ? data.models.filter(
-          (model) =>
-            typeof model?.name ===
-              "string" &&
-            Array.isArray(
-              model.supportedGenerationMethods
-            ) &&
-            model.supportedGenerationMethods.includes(
-              "generateContent"
-            )
-        )
-      : [];
+    await listGeminiModels(
+      apiKey
+    );
 
   if (!models.length) {
     throw new Error(
@@ -1812,11 +1702,59 @@ async function generateGeminiJson({
   model,
   prompt
 }) {
+  const output =
+    await callGemini({
+      apiKey,
+      model,
+      prompt,
+      json: true
+    });
+
+  try {
+    return JSON.parse(
+      output
+    );
+  } catch {
+    throw new Error(
+      "Gemini returned invalid JSON."
+    );
+  }
+}
+
+async function generateGeminiText({
+  apiKey,
+  model,
+  prompt
+}) {
+  return callGemini({
+    apiKey,
+    model,
+    prompt,
+    json: false
+  });
+}
+
+async function callGemini({
+  apiKey,
+  model,
+  prompt,
+  json
+}) {
   const modelId =
     model.replace(
       /^models\//,
       ""
     );
+
+  const generationConfig = {
+    temperature:
+      json ? 0.1 : 0.2
+  };
+
+  if (json) {
+    generationConfig.responseMimeType =
+      "application/json";
+  }
 
   const result =
     await fetch(
@@ -1843,11 +1781,7 @@ async function generateGeminiJson({
               ]
             }
           ],
-          generationConfig: {
-            temperature: 0.1,
-            responseMimeType:
-              "application/json"
-          }
+          generationConfig
         })
       }
     );
@@ -1896,93 +1830,10 @@ async function generateGeminiJson({
     );
   }
 
-  try {
-    return JSON.parse(
-      output
-    );
-  } catch {
-    throw new Error(
-      "Gemini returned invalid JSON."
-    );
-  }
+  return output.trim();
 }
 
-async function generateGeminiText({
-  apiKey,
-  model,
-  prompt
-}) {
-  const modelId =
-    model.replace(
-      /^models\//,
-      ""
-    );
-
-  const result =
-    await fetch(
-      `${GEMINI_API}/models/${encodeURIComponent(
-        modelId
-      )}:generateContent?key=${encodeURIComponent(
-        apiKey
-      )}`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type":
-            "application/json"
-        },
-        body: JSON.stringify({
-          contents: [
-            {
-              role: "user",
-              parts: [
-                {
-                  text:
-                    prompt
-                }
-              ]
-            }
-          ],
-          generationConfig: {
-            temperature: 0.2
-          }
-        })
-      }
-    );
-
-  const text =
-    await result.text();
-
-  let data = null;
-
-  try {
-    data =
-      text ? JSON.parse(text) : null;
-  } catch {
-    data = null;
-  }
-
-  if (!result.ok) {
-    throw new Error(
-      data?.error?.message ||
-        "Gemini request failed."
-    );
-  }
-
-  return (
-    data?.candidates?.[0]
-      ?.content?.parts
-      ?.map(
-        (part) =>
-          part.text || ""
-      )
-      .join("") || ""
-  );
-}
-
-/* -------------------------------------------------------------------------- */
-/* INSPECTION                                                                */
-/* -------------------------------------------------------------------------- */
+/* INSPECTION */
 
 function isReadOnlyInspectionRequest(
   message
@@ -1994,7 +1845,6 @@ function isReadOnlyInspectionRequest(
     "inspect",
     "inspection",
     "structure",
-    "structure kya",
     "project structure",
     "repo structure",
     "repository structure",
@@ -2070,9 +1920,9 @@ async function generateInspectionAnswer({
     const prompt =
       [
         "You are the read-only repository inspector for LD76 Code Agent.",
-        "Do not propose or perform any code changes.",
+        "Do not propose or perform code changes.",
         "Do not invent files.",
-        "Describe only facts visible in the supplied repository tree and files.",
+        "Use only facts visible in the supplied repository tree and files.",
         "",
         `Repository: ${context.owner}/${context.repo}`,
         `Branch: ${context.branch}`,
@@ -2089,20 +1939,11 @@ async function generateInspectionAnswer({
           .join("\n"),
         "",
         "Readable files:",
-        files
-          .map(
-            (file) =>
-              `--- ${file.path} ---\n${file.content}\n--- END ---`
-          )
-          .join("\n\n"),
+        buildFileContext(files),
         "",
         "Return concise plain text.",
-        "Include:",
-        "1. Overall project structure.",
-        "2. Important directories/files.",
-        "3. What the major files appear to do.",
-        "4. Important configuration/deployment files.",
-        "5. A clear statement that no files were modified."
+        "Explain the project structure, important files, major responsibilities and deployment/configuration files.",
+        "Clearly state that no files were modified."
       ].join("\n");
 
     const answer =
@@ -2143,9 +1984,7 @@ function buildLocalInspection(
         entry.type === "blob"
     );
 
-  for (
-    const entry of fileEntries
-  ) {
+  for (const entry of fileEntries) {
     const parts =
       entry.path.split("/");
 
@@ -2193,14 +2032,10 @@ function buildLocalInspection(
     "No files were modified."
   );
 
-  return lines.join(
-    "\n"
-  );
+  return lines.join("\n");
 }
 
-/* -------------------------------------------------------------------------- */
-/* PROMPTS                                                                   */
-/* -------------------------------------------------------------------------- */
+/* PROMPTS */
 
 function buildPlanPrompt({
   message,
@@ -2213,7 +2048,6 @@ function buildPlanPrompt({
     "Work only from the supplied real GitHub repository context.",
     "Do not invent files.",
     "Do not claim that anything was written.",
-    "The plan must identify exact repository files that need changes.",
     "",
     `Repository: ${context.owner}/${context.repo}`,
     `Branch: ${context.branch}`,
@@ -2252,8 +2086,7 @@ function buildPlanPrompt({
     "2. A create path must not already exist.",
     "3. If no code change is needed, changes must be empty.",
     "4. Do not include code in the plan.",
-    "5. Never request a write for a read-only inspection.",
-    "6. Do not invent dependencies."
+    "5. Do not invent dependencies."
   ].join("\n");
 }
 
@@ -2340,17 +2173,14 @@ function buildFileContext(
     .join("\n\n");
 }
 
-/* -------------------------------------------------------------------------- */
-/* NORMALIZATION                                                             */
-/* -------------------------------------------------------------------------- */
+/* NORMALIZATION */
 
 function normalizePlan(
   value
 ) {
   const plan =
     value &&
-    typeof value ===
-      "object"
+    typeof value === "object"
       ? value
       : {};
 
@@ -2402,13 +2232,10 @@ function normalizeChanges(
   const normalized = [];
   const seen = new Set();
 
-  for (
-    const change of changes
-  ) {
+  for (const change of changes) {
     if (
       !change ||
-      typeof change !==
-        "object"
+      typeof change !== "object"
     ) {
       return null;
     }
@@ -2426,9 +2253,7 @@ function normalizeChanges(
         "update",
         "create",
         "delete"
-      ].includes(
-        operation
-      ) ||
+      ].includes(operation) ||
       !isValidPath(path) ||
       seen.has(path)
     ) {
@@ -2452,24 +2277,17 @@ function normalizeChanges(
     }
 
     if (
-      operation ===
-        "update" &&
+      (
+        operation === "update" ||
+        operation === "delete"
+      ) &&
       !sha
     ) {
       return null;
     }
 
     if (
-      operation ===
-        "delete" &&
-      !sha
-    ) {
-      return null;
-    }
-
-    if (
-      operation ===
-        "create" &&
+      operation === "create" &&
       sha !== null
     ) {
       return null;
@@ -2478,10 +2296,8 @@ function normalizeChanges(
     let content = null;
 
     if (
-      operation ===
-        "update" ||
-      operation ===
-        "create"
+      operation === "update" ||
+      operation === "create"
     ) {
       if (
         typeof change.content !==
@@ -2497,10 +2313,8 @@ function normalizeChanges(
     }
 
     if (
-      operation ===
-        "delete" &&
-      change.content !==
-        null &&
+      operation === "delete" &&
+      change.content !== null &&
       typeof change.content !==
         "undefined"
     ) {
@@ -2528,9 +2342,7 @@ function validateChanges(
   tree
 ) {
   const normalized =
-    normalizeChanges(
-      changes
-    );
+    normalizeChanges(changes);
 
   if (!normalized) {
     throw new Error(
@@ -2543,8 +2355,7 @@ function validateChanges(
       tree
         .filter(
           (entry) =>
-            entry.type ===
-            "blob"
+            entry.type === "blob"
         )
         .map(
           (entry) => [
@@ -2554,9 +2365,7 @@ function validateChanges(
         )
     );
 
-  for (
-    const change of normalized
-  ) {
+  for (const change of normalized) {
     const currentSha =
       existing.get(
         change.path
@@ -2635,13 +2444,10 @@ function normalizeChangesForVerification(
   const normalized = [];
   const seen = new Set();
 
-  for (
-    const change of changes
-  ) {
+  for (const change of changes) {
     if (
       !change ||
-      typeof change !==
-        "object"
+      typeof change !== "object"
     ) {
       return null;
     }
@@ -2659,9 +2465,7 @@ function normalizeChangesForVerification(
         "create",
         "update",
         "delete"
-      ].includes(
-        operation
-      ) ||
+      ].includes(operation) ||
       !isValidPath(path) ||
       seen.has(path)
     ) {
@@ -2671,10 +2475,13 @@ function normalizeChangesForVerification(
     seen.add(path);
 
     if (
-      operation !==
-        "delete" &&
-      typeof change.content !==
-        "string"
+      operation !== "delete" &&
+      (
+        typeof change.content !==
+        "string" ||
+        change.content.length >
+        MAX_FILE_SIZE
+      )
     ) {
       return null;
     }
@@ -2683,8 +2490,7 @@ function normalizeChangesForVerification(
       operation,
       path,
       content:
-        operation ===
-        "delete"
+        operation === "delete"
           ? null
           : change.content
     });
@@ -2693,9 +2499,7 @@ function normalizeChangesForVerification(
   return normalized;
 }
 
-/* -------------------------------------------------------------------------- */
-/* PERMISSION CRYPTO                                                         */
-/* -------------------------------------------------------------------------- */
+/* PERMISSION CRYPTO */
 
 async function hashChanges(
   changes
@@ -2713,7 +2517,7 @@ async function hashChanges(
               change.sha ||
               null,
             content:
-              change.content ||
+              change.content ??
               null
           })
         )
@@ -2822,9 +2626,7 @@ async function verifySignature(
     );
 
   const bytes =
-    new Uint8Array(
-      32
-    );
+    new Uint8Array(32);
 
   for (
     let i = 0;
@@ -2855,8 +2657,7 @@ function parsePermissionToken(
   token
 ) {
   if (
-    typeof token !==
-    "string"
+    typeof token !== "string"
   ) {
     return null;
   }
@@ -2864,9 +2665,7 @@ function parsePermissionToken(
   const separator =
     token.indexOf(".");
 
-  if (
-    separator <= 0
-  ) {
+  if (separator <= 0) {
     return null;
   }
 
@@ -2882,9 +2681,7 @@ function parsePermissionToken(
     );
 
   if (
-    !/^[a-f0-9]{64}$/i.test(
-      id
-    ) ||
+    !/^[a-f0-9]{64}$/i.test(id) ||
     !/^[a-f0-9]{64}$/i.test(
       signature
     )
@@ -2914,9 +2711,7 @@ function buildPermissionPayload({
     repo,
     branch,
     changesHash,
-    String(
-      expiresAt
-    )
+    String(expiresAt)
   ].join("|");
 }
 
@@ -2946,20 +2741,24 @@ function createPermissionId() {
 function getPermissionExpiration(
   mode
 ) {
-  if (
-    mode ===
+  return mode ===
     "allow_once"
-  ) {
-    return (
-      Date.now() +
+    ? Date.now() +
       5 * 60 * 1000
-    );
-  }
+    : Date.now() +
+      60 * 60 * 1000;
+}
 
-  return (
-    Date.now() +
-    60 * 60 * 1000
-  );
+function normalizePermissionMode(
+  mode
+) {
+  return [
+    "allow_once",
+    "allow_for_task",
+    "deny"
+  ].includes(mode)
+    ? mode
+    : null;
 }
 
 function createPermissionCookie({
@@ -3021,9 +2820,7 @@ function createExpiredPermissionCookie() {
   ].join("; ");
 }
 
-/* -------------------------------------------------------------------------- */
-/* COMMON                                                                    */
-/* -------------------------------------------------------------------------- */
+/* COMMON */
 
 function getCookie(
   request,
@@ -3052,9 +2849,7 @@ function getCookie(
         )
         .trim();
 
-    if (
-      key !== name
-    ) {
+    if (key !== name) {
       continue;
     }
 
@@ -3120,19 +2915,13 @@ function validateRepositoryContext(
   body
 ) {
   const owner =
-    cleanString(
-      body.owner
-    );
+    cleanString(body.owner);
 
   const repo =
-    cleanString(
-      body.repo
-    );
+    cleanString(body.repo);
 
   const branch =
-    cleanString(
-      body.branch
-    );
+    cleanString(body.branch);
 
   if (
     !isValidRepositoryName(
@@ -3350,424 +3139,4 @@ async function getCommit(
       sha
     )}`
   );
-}
-
-async function githubGet(
-  accessToken,
-  path
-) {
-  return githubRequest(
-    accessToken,
-    path
-  );
-}
-
-async function githubRequest(
-  accessToken,
-  path,
-  options = {}
-) {
-  const result =
-    await fetch(
-      `${GITHUB_API}${path}`,
-      {
-        method:
-          options.method ||
-          "GET",
-        headers: {
-          Accept:
-            "application/vnd.github+json",
-          Authorization:
-            `Bearer ${accessToken}`,
-          "X-GitHub-Api-Version":
-            GITHUB_API_VERSION,
-          ...(options.body
-            ? {
-                "Content-Type":
-                  "application/json"
-              }
-            : {})
-        },
-        ...(options.body
-          ? {
-              body:
-                options.body
-            }
-          : {})
-      }
-    );
-
-  const text =
-    await result.text();
-
-  let data = null;
-
-  try {
-    data =
-      text
-        ? JSON.parse(text)
-        : null;
-  } catch {
-    data = null;
-  }
-
-  if (!result.ok) {
-    const error =
-      new Error(
-        data?.message ||
-          "GitHub API request failed."
-      );
-
-    error.status =
-      result.status;
-
-    throw error;
-  }
-
-  return data;
-}
-
-async function getFileAtRef({
-  accessToken,
-  owner,
-  repo,
-  path,
-  ref
-}) {
-  try {
-    const encoded =
-      path
-        .split("/")
-        .map(
-          encodeURIComponent
-        )
-        .join("/");
-
-    const data =
-      await githubGet(
-        accessToken,
-        `/repos/${encodeURIComponent(
-          owner
-        )}/${encodeURIComponent(
-          repo
-        )}/contents/${encoded}?ref=${encodeURIComponent(
-          ref
-        )}`
-      );
-
-    if (
-      data?.type !==
-        "file" ||
-      typeof data.content !==
-        "string"
-    ) {
-      throw new Error(
-        `GitHub path is not a readable file: ${path}`
-      );
-    }
-
-    return {
-      sha: data.sha,
-      content:
-        Buffer.from(
-          data.content.replace(
-            /\s/g,
-            ""
-          ),
-          "base64"
-        ).toString(
-          "utf8"
-        )
-    };
-  } catch (error) {
-    if (
-      error.status ===
-      404
-    ) {
-      return null;
-    }
-
-    throw error;
-  }
-}
-
-async function applyGitDataCommit({
-  accessToken,
-  owner,
-  repo,
-  branch,
-  message,
-  changes
-}) {
-  const headSha =
-    await getBranchHead(
-      accessToken,
-      owner,
-      repo,
-      branch
-    );
-
-  const commit =
-    await getCommit(
-      accessToken,
-      owner,
-      repo,
-      headSha
-    );
-
-  const baseTreeSha =
-    commit?.tree?.sha;
-
-  if (
-    !isValidSha(
-      baseTreeSha
-    )
-  ) {
-    throw new Error(
-      "Could not determine the current Git tree."
-    );
-  }
-
-  const tree = [];
-
-  for (
-    const change of changes
-  ) {
-    if (
-      change.operation ===
-      "delete"
-    ) {
-      tree.push({
-        path:
-          change.path,
-        mode:
-          "100644",
-        type:
-          "blob",
-        sha:
-          null
-      });
-
-      continue;
-    }
-
-    const blob =
-      await githubRequest(
-        accessToken,
-        `/repos/${encodeURIComponent(
-          owner
-        )}/${encodeURIComponent(
-          repo
-        )}/git/blobs`,
-        {
-          method:
-            "POST",
-          body:
-            JSON.stringify({
-              content:
-                change.content,
-              encoding:
-                "utf-8"
-            })
-        }
-      );
-
-    if (
-      !isValidSha(
-        blob?.sha
-      )
-    ) {
-      throw new Error(
-        `GitHub did not return a valid blob SHA for ${change.path}.`
-      );
-    }
-
-    tree.push({
-      path:
-        change.path,
-      mode:
-        "100644",
-      type:
-        "blob",
-      sha:
-        blob.sha
-    });
-  }
-
-  const newTree =
-    await githubRequest(
-      accessToken,
-      `/repos/${encodeURIComponent(
-        owner
-      )}/${encodeURIComponent(
-        repo
-      )}/git/trees`,
-      {
-        method:
-          "POST",
-        body:
-          JSON.stringify({
-            base_tree:
-              baseTreeSha,
-            tree
-          })
-      }
-    );
-
-  if (
-    !isValidSha(
-      newTree?.sha
-    )
-  ) {
-    throw new Error(
-      "GitHub did not return a valid new tree."
-    );
-  }
-
-  const newCommit =
-    await githubRequest(
-      accessToken,
-      `/repos/${encodeURIComponent(
-        owner
-      )}/${encodeURIComponent(
-        repo
-      )}/git/commits`,
-      {
-        method:
-          "POST",
-        body:
-          JSON.stringify({
-            message,
-            tree:
-              newTree.sha,
-            parents: [
-              headSha
-            ]
-          })
-      }
-    );
-
-  if (
-    !isValidSha(
-      newCommit?.sha
-    )
-  ) {
-    throw new Error(
-      "GitHub did not return a valid new commit."
-    );
-  }
-
-  const updated =
-    await githubRequest(
-      accessToken,
-      `/repos/${encodeURIComponent(
-        owner
-      )}/${encodeURIComponent(
-        repo
-      )}/git/refs/heads/${encodeURIComponent(
-        branch
-      )}`,
-      {
-        method:
-          "PATCH",
-        body:
-          JSON.stringify({
-            sha:
-              newCommit.sha,
-            force:
-              false
-          })
-      }
-    );
-
-  if (
-    updated?.object?.sha !==
-    newCommit.sha
-  ) {
-    throw new Error(
-      "GitHub branch update could not be confirmed."
-    );
-  }
-
-  return {
-    sha:
-      newCommit.sha,
-    message
-  };
-}
-
-function filePriority(
-  path
-) {
-  const lower =
-    path.toLowerCase();
-
-  if (
-    lower ===
-      "package.json" ||
-    lower ===
-      "vercel.json"
-  ) {
-    return 100;
-  }
-
-  if (
-    lower ===
-      "readme.md" ||
-    lower ===
-      "plan.md"
-  ) {
-    return 90;
-  }
-
-  if (
-    lower.includes(
-      "config"
-    )
-  ) {
-    return 70;
-  }
-
-  if (
-    lower.includes(
-      "api/"
-    ) ||
-    lower.includes(
-      "server/"
-    )
-  ) {
-    return 65;
-  }
-
-  if (
-    lower.endsWith(
-      ".js"
-    ) ||
-    lower.endsWith(
-      ".ts"
-    )
-  ) {
-    return 55;
-  }
-
-  if (
-    lower.endsWith(
-      ".json"
-    )
-  ) {
-    return 50;
-  }
-
-  if (
-    lower.endsWith(
-      ".html"
-    ) ||
-    lower.endsWith(
-      ".css"
-    )
-  ) {
-    return 45;
-  }
-
-  return 10;
-}
+                       }
