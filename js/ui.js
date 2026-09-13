@@ -90,6 +90,21 @@ export function setBusy(busy) {
     elements.refreshModelsButton.disabled =
       state.busy;
   }
+
+  if (elements.agentAllowOnceButton) {
+    elements.agentAllowOnceButton.disabled =
+      state.busy;
+  }
+
+  if (elements.agentAllowTaskButton) {
+    elements.agentAllowTaskButton.disabled =
+      state.busy;
+  }
+
+  if (elements.agentDenyButton) {
+    elements.agentDenyButton.disabled =
+      state.busy;
+  }
 }
 
 export function appendProgress(message) {
@@ -370,4 +385,136 @@ export function setBranchSelectorEnabled(
 
   elements.branchSelector.disabled =
     !enabled;
+}
+
+export function showAgentPermission(
+  permission
+) {
+  if (!elements.agentPermission) {
+    return;
+  }
+
+  const changes =
+    Array.isArray(
+      permission?.changes
+    )
+      ? permission.changes
+      : [];
+
+  if (elements.agentPermissionMessage) {
+    elements.agentPermissionMessage.textContent =
+      `Agent ${changes.length} GitHub change(s) apply karna chahta hai. Review karo aur explicit permission do.`;
+  }
+
+  renderAgentPermissionChanges(
+    changes
+  );
+
+  elements.agentPermission.classList.remove(
+    "hidden"
+  );
+
+  elements.agentPermission.hidden =
+    false;
+}
+
+export function hideAgentPermission() {
+  if (!elements.agentPermission) {
+    return;
+  }
+
+  elements.agentPermission.classList.add(
+    "hidden"
+  );
+
+  elements.agentPermission.hidden =
+    true;
+
+  elements.agentPermissionChanges?.replaceChildren();
+}
+
+export function renderAgentPermissionChanges(
+  changes
+) {
+  if (!elements.agentPermissionChanges) {
+    return;
+  }
+
+  elements.agentPermissionChanges.replaceChildren();
+
+  if (
+    !Array.isArray(changes) ||
+    changes.length === 0
+  ) {
+    const empty =
+      document.createElement("p");
+
+    empty.textContent =
+      "No changes available.";
+
+    elements.agentPermissionChanges.appendChild(
+      empty
+    );
+
+    return;
+  }
+
+  changes.forEach(
+    (change, index) => {
+      const item =
+        document.createElement("div");
+
+      item.className =
+        "agent-permission-change";
+
+      const title =
+        document.createElement("strong");
+
+      const operation =
+        String(
+          change?.operation ||
+            "change"
+        ).toUpperCase();
+
+      const path =
+        String(
+          change?.path ||
+            "unknown file"
+        );
+
+      title.textContent =
+        `${index + 1}. ${operation} ${path}`;
+
+      item.appendChild(title);
+
+      if (change?.reason) {
+        const reason =
+          document.createElement("p");
+
+        reason.textContent =
+          String(change.reason);
+
+        item.appendChild(reason);
+      }
+
+      elements.agentPermissionChanges.appendChild(
+        item
+      );
+    }
+  );
+}
+
+export function updateAgentPermissionUI() {
+  if (
+    state.agent.phase ===
+    "permission-required"
+  ) {
+    showAgentPermission(
+      state.agent.permission
+    );
+
+    return;
+  }
+
+  hideAgentPermission();
 }
