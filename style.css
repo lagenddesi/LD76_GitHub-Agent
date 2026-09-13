@@ -146,6 +146,13 @@ select:focus-visible {
   cursor: pointer;
 }
 
+    @media (max-width: 699px) {
+  .icon-button {
+    display: flex;
+  }
+    }
+
+
 /* Main */
 
 .app-main {
