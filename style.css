@@ -146,12 +146,11 @@ select:focus-visible {
   cursor: pointer;
 }
 
-    @media (max-width: 699px) {
+@media (max-width: 699px) {
   .icon-button {
     display: flex;
   }
-    }
-
+}
 
 /* Main */
 
@@ -570,6 +569,31 @@ p {
 .nav-icon {
   font-size: 17px;
   line-height: 1;
+}
+
+/* Mobile navigation menu */
+
+@media (max-width: 699px) {
+  .bottom-navigation.open {
+    grid-template-columns: 1fr;
+    right: 14px;
+    bottom: calc(var(--nav-height) + 10px);
+    left: auto;
+    width: 190px;
+    height: auto;
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    box-shadow: var(--shadow);
+  }
+
+  .bottom-navigation.open .nav-item {
+    min-height: 44px;
+    flex-direction: row;
+    justify-content: flex-start;
+    gap: 11px;
+    padding: 0 13px;
+  }
 }
 
 /* Global message */
