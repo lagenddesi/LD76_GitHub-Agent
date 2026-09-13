@@ -15,126 +15,86 @@ export async function handleGitHubRoute(
   response,
   route = []
 ) {
-  const path =
-    Array.isArray(route)
-      ? route.filter(Boolean)
-      : [];
-
-  const action =
-    path.join("/");
+  const path = route.join("/");
 
   try {
-    switch (action) {
-      case "login":
-        return handleLogin(
-          request,
-          response
-        );
-
-      case "callback":
-        return handleCallback(
-          request,
-          response
-        );
-
-      case "logout":
-        return handleLogout(
-          request,
-          response
-        );
-
-      case "status":
-        return handleStatus(
-          request,
-          response
-        );
-
-      case "repos":
-        return handleRepositories(
-          request,
-          response
-        );
-
-      case "branches":
-        return handleBranches(
-          request,
-          response
-        );
-
-      case "file":
-        return handleFile(
-          request,
-          response
-        );
-
-      case "tree":
-        return handleTree(
-          request,
-          response
-        );
-
-      case "commit":
-        return handleCommit(
-          request,
-          response
-        );
-
-      case "create-file":
-        return handleCreateFile(
-          request,
-          response
-        );
-
-      case "update-file":
-        return handleUpdateFile(
-          request,
-          response
-        );
-
-      case "delete-file":
-        return handleDeleteFile(
-          request,
-          response
-        );
-
-      case "create-branch":
-        return handleCreateBranch(
-          request,
-          response
-        );
-
-      case "delete-branch":
-        return handleDeleteBranch(
-          request,
-          response
-        );
-
-      default:
-        return sendJson(
-          response,
-          404,
-          {
-            ok: false,
-            error:
-              "GitHub route not found."
-          }
-        );
+    if (path === "login") {
+      return handleLogin(request, response);
     }
+
+    if (path === "callback") {
+      return handleCallback(request, response);
+    }
+
+    if (path === "logout") {
+      return handleLogout(request, response);
+    }
+
+    if (path === "status") {
+      return handleStatus(request, response);
+    }
+
+    if (path === "repos") {
+      return handleRepos(request, response);
+    }
+
+    if (path === "branches") {
+      return handleBranches(request, response);
+    }
+
+    if (path === "file") {
+      return handleFile(request, response);
+    }
+
+    if (path === "tree") {
+      return handleTree(request, response);
+    }
+
+    if (path === "commit") {
+      return handleCommit(request, response);
+    }
+
+    if (path === "create-file") {
+      return handleCreateFile(request, response);
+    }
+
+    if (path === "update-file") {
+      return handleUpdateFile(request, response);
+    }
+
+    if (path === "delete-file") {
+      return handleDeleteFile(request, response);
+    }
+
+    if (path === "create-branch") {
+      return handleCreateBranch(request, response);
+    }
+
+    if (path === "delete-branch") {
+      return handleDeleteBranch(request, response);
+    }
+
+    return response.status(404).json({
+      ok: false,
+      error: "GitHub API route not found."
+    });
   } catch (error) {
     console.error(
-      "GitHub route failed:",
+      "GitHub route error:",
       error
     );
 
-    return sendJson(
-      response,
-      500,
-      {
-        ok: false,
-        error:
-          "GitHub operation failed."
-      }
-    );
+    return response.status(
+      error.status >= 400 &&
+      error.status < 600
+        ? error.status
+        : 500
+    ).json({
+      ok: false,
+      error:
+        error.message ||
+        "GitHub request failed."
+    });
   }
 }
 
@@ -143,9 +103,7 @@ function handleLogin(
   response
 ) {
   if (request.method !== "GET") {
-    return methodNotAllowed(
-      response
-    );
+    return methodNotAllowed(response);
   }
 
   const clientId =
@@ -155,27 +113,19 @@ function handleLogin(
     process.env.LD76_GITHUB_REDIRECT_URI;
 
   if (!clientId) {
-    return sendJson(
-      response,
-      503,
-      {
-        ok: false,
-        error:
-          "GitHub OAuth client ID is not configured."
-      }
-    );
+    return response.status(503).json({
+      ok: false,
+      error:
+        "GitHub OAuth client ID is not configured. Add LD76_GITHUB_CLIENT_ID to the Vercel environment variables."
+    });
   }
 
   if (!redirectUri) {
-    return sendJson(
-      response,
-      503,
-      {
-        ok: false,
-        error:
-          "GitHub OAuth redirect URI is not configured."
-      }
-    );
+    return response.status(503).json({
+      ok: false,
+      error:
+        "GitHub OAuth redirect URI is not configured. Add LD76_GITHUB_REDIRECT_URI to the Vercel environment variables."
+    });
   }
 
   const state =
@@ -208,9 +158,16 @@ function handleLogin(
 
   response.setHeader(
     "Set-Cookie",
-    `${OAUTH_STATE_COOKIE}=${encodeURIComponent(
-      state
-    )}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600`
+    serializeCookie(
+      OAUTH_STATE_COOKIE,
+      state,
+      {
+        httpOnly: true,
+        secure: true,
+        sameSite: "Lax",
+        maxAge: 600
+      }
+    )
   );
 
   return response.redirect(
@@ -224,9 +181,7 @@ async function handleCallback(
   response
 ) {
   if (request.method !== "GET") {
-    return methodNotAllowed(
-      response
-    );
+    return methodNotAllowed(response);
   }
 
   const clientId =
@@ -235,85 +190,85 @@ async function handleCallback(
   const clientSecret =
     process.env.LD76_GITHUB_CLIENT_SECRET;
 
+  const redirectUri =
+    process.env.LD76_GITHUB_REDIRECT_URI;
+
   if (!clientId || !clientSecret) {
-    return sendJson(
+    return response.status(503).json({
+      ok: false,
+      error:
+        "GitHub OAuth credentials are not configured."
+    });
+  }
+
+  if (!redirectUri) {
+    return response.status(503).json({
+      ok: false,
+      error:
+        "GitHub OAuth redirect URI is not configured."
+    });
+  }
+
+  const errorParam =
+    String(
+      request.query?.error || ""
+    ).trim();
+
+  if (errorParam) {
+    clearCookie(
       response,
-      503,
-      {
-        ok: false,
-        error:
-          "GitHub OAuth credentials are not configured."
-      }
+      OAUTH_STATE_COOKIE
+    );
+
+    return response.redirect(
+      302,
+      `/?github=error&reason=${encodeURIComponent(
+        errorParam
+      )}`
     );
   }
 
   const code =
-    typeof request.query?.code ===
-    "string"
-      ? request.query.code
-      : "";
+    String(
+      request.query?.code || ""
+    ).trim();
 
   const returnedState =
-    typeof request.query?.state ===
-    "string"
-      ? request.query.state
-      : "";
+    String(
+      request.query?.state || ""
+    ).trim();
 
-  const oauthError =
-    typeof request.query?.error ===
-    "string"
-      ? request.query.error
-      : "";
-
-  if (oauthError) {
-    return sendJson(
-      response,
-      400,
-      {
-        ok: false,
-        error:
-          "GitHub authorization was cancelled or denied."
-      }
+  const storedState =
+    getCookie(
+      request.headers.cookie || "",
+      OAUTH_STATE_COOKIE
     );
-  }
 
   if (!code || !returnedState) {
-    return sendJson(
-      response,
-      400,
-      {
-        ok: false,
-        error:
-          "GitHub OAuth callback is missing the authorization code or state."
-      }
-    );
+    return response.status(400).json({
+      ok: false,
+      error:
+        "GitHub OAuth code and state are required."
+    });
   }
 
-  const cookies =
-    parseCookies(
-      request.headers.cookie || ""
-    );
-
-  const expectedState =
-    cookies[OAUTH_STATE_COOKIE] ||
-    "";
-
   if (
-    !expectedState ||
+    !storedState ||
     !timingSafeEqual(
-      expectedState,
+      storedState,
       returnedState
     )
   ) {
-    return sendJson(
+    clearCookie(
       response,
-      400,
-      {
-        ok: false,
-        error:
-          "GitHub OAuth state validation failed."
-      }
+      OAUTH_STATE_COOKIE
     );
+
+    return response.status(400).json({
+      ok: false,
+      error:
+        "Invalid or expired GitHub OAuth state."
+    });
   }
 
   const tokenResponse =
@@ -329,43 +284,69 @@ async function handleCallback(
         },
         body: JSON.stringify({
           client_id: clientId,
-          client_secret:
-            clientSecret,
-          code
+          client_secret: clientSecret,
+          code,
+          redirect_uri: redirectUri
         })
       }
     );
+
+  if (!tokenResponse.ok) {
+    clearCookie(
+      response,
+      OAUTH_STATE_COOKIE
+    );
+
+    return response.status(502).json({
+      ok: false,
+      error:
+        "GitHub OAuth token exchange failed."
+    });
+  }
 
   const tokenData =
     await tokenResponse.json();
 
   if (
-    !tokenResponse.ok ||
-    !tokenData?.access_token
+    typeof tokenData.access_token !==
+      "string" ||
+    !tokenData.access_token
   ) {
-    console.error(
-      "GitHub OAuth token exchange failed:",
-      tokenData
+    clearCookie(
+      response,
+      OAUTH_STATE_COOKIE
     );
 
-    return sendJson(
-      response,
-      502,
-      {
-        ok: false,
-        error:
-          "GitHub access token could not be obtained."
-      }
-    );
+    return response.status(502).json({
+      ok: false,
+      error:
+        tokenData.error_description ||
+        "GitHub did not return an access token."
+    });
   }
 
   response.setHeader(
     "Set-Cookie",
     [
-      `${OAUTH_STATE_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`,
-      `${ACCESS_TOKEN_COOKIE}=${encodeURIComponent(
-        tokenData.access_token
-      )}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=2592000`
+      serializeCookie(
+        ACCESS_TOKEN_COOKIE,
+        tokenData.access_token,
+        {
+          httpOnly: true,
+          secure: true,
+          sameSite: "Lax"
+        }
+      ),
+      serializeCookie(
+        OAUTH_STATE_COOKIE,
+        "",
+        {
+          httpOnly: true,
+          secure: true,
+          sameSite: "Lax",
+          maxAge: 0
+        }
+      )
     ]
   );
 
@@ -380,27 +361,39 @@ function handleLogout(
   response
 ) {
   if (request.method !== "POST") {
-    return methodNotAllowed(
-      response
-    );
+    return methodNotAllowed(response);
   }
 
   response.setHeader(
     "Set-Cookie",
     [
-      `${ACCESS_TOKEN_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`,
-      `${OAUTH_STATE_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`
+      serializeCookie(
+        ACCESS_TOKEN_COOKIE,
+        "",
+        {
+          httpOnly: true,
+          secure: true,
+          sameSite: "Lax",
+          maxAge: 0
+        }
+      ),
+      serializeCookie(
+        OAUTH_STATE_COOKIE,
+        "",
+        {
+          httpOnly: true,
+          secure: true,
+          sameSite: "Lax",
+          maxAge: 0
+        }
+      )
     ]
   );
 
-  return sendJson(
-    response,
-    200,
-    {
-      ok: true,
-      connected: false
-    }
-  );
+  return response.status(200).json({
+    ok: true,
+    connected: false
+  });
 }
 
 async function handleStatus(
@@ -408,95 +401,83 @@ async function handleStatus(
   response
 ) {
   if (request.method !== "GET") {
-    return methodNotAllowed(
-      response
-    );
+    return methodNotAllowed(response);
   }
 
   const token =
     getAccessToken(request);
 
   if (!token) {
-    return sendJson(
-      response,
-      200,
-      {
-        ok: true,
-        connected: false
-      }
-    );
+    return response.status(200).json({
+      ok: true,
+      connected: false
+    });
   }
 
-  const result =
-    await githubRequest(
-      "/user",
-      {
-        method: "GET",
+  try {
+    const githubResponse =
+      await githubFetch(
+        "/user",
         token
-      }
-    );
+      );
 
-  if (result.status === 401) {
-    return sendJson(
-      response,
-      200,
-      {
+    if (
+      githubResponse.status === 401
+    ) {
+      return response.status(200).json({
         ok: true,
         connected: false
-      }
-    );
-  }
+      });
+    }
 
-  if (!result.ok) {
-    return sendJson(
-      response,
-      502,
-      {
-        ok: false,
-        error:
-          "Could not verify the GitHub connection."
-      }
-    );
-  }
+    if (!githubResponse.ok) {
+      throw await githubError(
+        githubResponse,
+        "Could not verify the GitHub connection."
+      );
+    }
 
-  const user =
-    result.data;
+    const user =
+      await githubResponse.json();
 
-  return sendJson(
-    response,
-    200,
-    {
+    return response.status(200).json({
       ok: true,
       connected: true,
       user: {
         login:
-          typeof user.login ===
-          "string"
+          typeof user.login === "string"
             ? user.login
             : "",
         name:
-          typeof user.name ===
-          "string"
+          typeof user.name === "string"
             ? user.name
             : null,
         avatarUrl:
-          typeof user.avatar_url ===
-          "string"
+          typeof user.avatar_url === "string"
             ? user.avatar_url
             : null
       }
-    }
-  );
+    });
+  } catch (error) {
+    console.error(
+      "GitHub status check failed:",
+      error
+    );
+
+    return response.status(502).json({
+      ok: false,
+      error:
+        "Could not reach GitHub to verify the connection."
+    });
+  }
 }
 
-async function handleRepositories(
+async function handleRepos(
   request,
   response
 ) {
   if (request.method !== "GET") {
-    return methodNotAllowed(
-      response
-    );
+    return methodNotAllowed(response);
   }
 
   const token =
@@ -509,110 +490,123 @@ async function handleRepositories(
     return;
   }
 
-  const repositories = [];
-
-  for (
+  try {
+    const repositories = [];
     let page = 1;
-    page <= 10;
-    page += 1
-  ) {
-    const result =
-      await githubRequest(
-        `/user/repos?per_page=100&page=${page}&sort=updated`,
-        {
-          method: "GET",
+
+    while (page <= 10) {
+      const githubResponse =
+        await githubFetch(
+          `/user/repos?per_page=100&page=${page}&sort=updated`,
           token
-        }
-      );
+        );
 
-    if (!result.ok) {
-      return sendGitHubError(
-        response,
-        result
-      );
-    }
+      if (
+        githubResponse.status === 401
+      ) {
+        clearAccessTokenCookie(
+          response
+        );
 
-    if (
-      !Array.isArray(
-        result.data
-      )
-    ) {
-      return sendJson(
-        response,
-        502,
-        {
+        return response.status(401).json({
           ok: false,
           error:
-            "GitHub returned an unexpected repository response."
-        }
+            "GitHub authentication has expired. Please connect GitHub again."
+        });
+      }
+
+      if (!githubResponse.ok) {
+        throw await githubError(
+          githubResponse,
+          "Could not load your GitHub repositories."
+        );
+      }
+
+      const pageData =
+        await githubResponse.json();
+
+      if (!Array.isArray(pageData)) {
+        throw createError(
+          502,
+          "GitHub returned an unexpected repository response."
+        );
+      }
+
+      repositories.push(
+        ...pageData
+          .filter(
+            (repository) =>
+              repository &&
+              typeof repository.id ===
+                "number" &&
+              typeof repository.full_name ===
+                "string"
+          )
+          .map(
+            (repository) => ({
+              id: repository.id,
+              name: repository.name,
+              fullName:
+                repository.full_name,
+              private:
+                Boolean(
+                  repository.private
+                ),
+              defaultBranch:
+                typeof repository.default_branch ===
+                "string"
+                  ? repository.default_branch
+                  : "main",
+              description:
+                typeof repository.description ===
+                "string"
+                  ? repository.description
+                  : null,
+              htmlUrl:
+                typeof repository.html_url ===
+                "string"
+                  ? repository.html_url
+                  : null,
+              language:
+                typeof repository.language ===
+                "string"
+                  ? repository.language
+                  : null,
+              updatedAt:
+                typeof repository.updated_at ===
+                "string"
+                  ? repository.updated_at
+                  : null
+            })
+          )
       );
+
+      if (pageData.length < 100) {
+        break;
+      }
+
+      page += 1;
     }
 
-    repositories.push(
-      ...result.data
-        .filter(
-          (repository) =>
-            repository &&
-            typeof repository.id ===
-              "number" &&
-            typeof repository.full_name ===
-              "string"
-        )
-        .map(
-          (repository) => ({
-            id: repository.id,
-            name:
-              repository.name,
-            fullName:
-              repository.full_name,
-            private:
-              Boolean(
-                repository.private
-              ),
-            defaultBranch:
-              typeof repository.default_branch ===
-              "string"
-                ? repository.default_branch
-                : "main",
-            description:
-              typeof repository.description ===
-              "string"
-                ? repository.description
-                : null,
-            htmlUrl:
-              typeof repository.html_url ===
-              "string"
-                ? repository.html_url
-                : null,
-            language:
-              typeof repository.language ===
-              "string"
-                ? repository.language
-                : null,
-            updatedAt:
-              typeof repository.updated_at ===
-              "string"
-                ? repository.updated_at
-                : null
-          })
-        )
-    );
-
-    if (
-      result.data.length < 100
-    ) {
-      break;
-    }
-  }
-
-  return sendJson(
-    response,
-    200,
-    {
+    return response.status(200).json({
       ok: true,
       repositories
-    }
-  );
+    });
+  } catch (error) {
+    console.error(
+      "GitHub repository loading failed:",
+      error
+    );
+
+    return response.status(
+      error.status || 502
+    ).json({
+      ok: false,
+      error:
+        error.message ||
+        "Could not reach GitHub to load repositories."
+    });
+  }
 }
 
 async function handleBranches(
@@ -620,9 +614,7 @@ async function handleBranches(
   response
 ) {
   if (request.method !== "GET") {
-    return methodNotAllowed(
-      response
-    );
+    return methodNotAllowed(response);
   }
 
   const token =
@@ -637,110 +629,123 @@ async function handleBranches(
 
   const owner =
     String(
-      request.query?.owner ||
-        ""
+      request.query?.owner || ""
     ).trim();
 
   const repo =
     String(
-      request.query?.repo ||
-        ""
+      request.query?.repo || ""
     ).trim();
 
   if (
-    !isValidName(owner) ||
-    !isValidName(repo)
+    !isValidGitHubName(owner) ||
+    !isValidGitHubName(repo)
   ) {
-    return sendJson(
-      response,
-      400,
-      {
-        ok: false,
-        error:
-          "A valid GitHub repository owner and name are required."
-      }
-    );
+    return response.status(400).json({
+      ok: false,
+      error:
+        "A valid GitHub repository owner and name are required."
+    });
   }
 
-  const branches = [];
-
-  for (
+  try {
+    const branches = [];
     let page = 1;
-    page <= 10;
-    page += 1
-  ) {
-    const result =
-      await githubRequest(
-        `/repos/${encodeURIComponent(
-          owner
-        )}/${encodeURIComponent(
-          repo
-        )}/branches?per_page=100&page=${page}`,
-        {
-          method: "GET",
+
+    while (page <= 10) {
+      const githubResponse =
+        await githubFetch(
+          `/repos/${encodeURIComponent(
+            owner
+          )}/${encodeURIComponent(
+            repo
+          )}/branches?per_page=100&page=${page}`,
           token
-        }
-      );
+        );
 
-    if (!result.ok) {
-      return sendGitHubError(
-        response,
-        result
-      );
-    }
+      if (
+        githubResponse.status === 401
+      ) {
+        clearAccessTokenCookie(
+          response
+        );
 
-    if (
-      !Array.isArray(
-        result.data
-      )
-    ) {
-      return sendJson(
-        response,
-        502,
-        {
+        return response.status(401).json({
           ok: false,
           error:
-            "GitHub returned an unexpected branch response."
-        }
+            "GitHub authentication has expired. Please connect GitHub again."
+        });
+      }
+
+      if (
+        githubResponse.status === 404
+      ) {
+        return response.status(404).json({
+          ok: false,
+          error:
+            "Repository was not found or you do not have access to it."
+        });
+      }
+
+      if (!githubResponse.ok) {
+        throw await githubError(
+          githubResponse,
+          "Could not load repository branches."
+        );
+      }
+
+      const pageData =
+        await githubResponse.json();
+
+      if (!Array.isArray(pageData)) {
+        throw createError(
+          502,
+          "GitHub returned an unexpected branch response."
+        );
+      }
+
+      branches.push(
+        ...pageData
+          .filter(
+            (branch) =>
+              branch &&
+              typeof branch.name ===
+                "string"
+          )
+          .map(
+            (branch) => ({
+              name: branch.name,
+              protected:
+                Boolean(
+                  branch.protected
+                )
+            })
+          )
       );
+
+      if (pageData.length < 100) {
+        break;
+      }
+
+      page += 1;
     }
 
-    branches.push(
-      ...result.data
-        .filter(
-          (branch) =>
-            branch &&
-            typeof branch.name ===
-              "string"
-        )
-        .map(
-          (branch) => ({
-            name: branch.name,
-            protected:
-              Boolean(
-                branch.protected
-              )
-          })
-        )
-    );
-
-    if (
-      result.data.length < 100
-    ) {
-      break;
-    }
-  }
-
-  return sendJson(
-    response,
-    200,
-    {
+    return response.status(200).json({
       ok: true,
       owner,
       repo,
       branches
-    }
-  );
+    });
+  } catch (error) {
+    return response.status(
+      error.status || 502
+    ).json({
+      ok: false,
+      error:
+        error.message ||
+        "Could not reach GitHub to load repository branches."
+    });
+  }
 }
 
 async function handleFile(
@@ -748,146 +753,9 @@ async function handleFile(
   response
 ) {
   if (request.method !== "GET") {
-    return methodNotAllowed(
-      response
-    );
+    return methodNotAllowed(response);
   }
 
-  return proxyRepositoryRead(
-    request,
-    response,
-    "file"
-  );
-}
-
-async function handleTree(
-  request,
-  response
-) {
-  if (request.method !== "GET") {
-    return methodNotAllowed(
-      response
-    );
-  }
-
-  return proxyRepositoryRead(
-    request,
-    response,
-    "tree"
-  );
-}
-
-async function handleCommit(
-  request,
-  response
-) {
-  if (request.method !== "POST") {
-    return methodNotAllowed(
-      response
-    );
-  }
-
-  return proxyRepositoryWrite(
-    request,
-    response,
-    "commit"
-  );
-}
-
-async function handleCreateFile(
-  request,
-  response
-) {
-  if (request.method !== "POST") {
-    return methodNotAllowed(
-      response
-    );
-  }
-
-  return proxyRepositoryWrite(
-    request,
-    response,
-    "create-file"
-  );
-}
-
-async function handleUpdateFile(
-  request,
-  response
-) {
-  if (
-    request.method !== "PUT" &&
-    request.method !== "PATCH" &&
-    request.method !== "POST"
-  ) {
-    return methodNotAllowed(
-      response
-    );
-  }
-
-  return proxyRepositoryWrite(
-    request,
-    response,
-    "update-file"
-  );
-}
-
-async function handleDeleteFile(
-  request,
-  response
-) {
-  if (request.method !== "DELETE") {
-    return methodNotAllowed(
-      response
-    );
-  }
-
-  return proxyRepositoryWrite(
-    request,
-    response,
-    "delete-file"
-  );
-}
-
-async function handleCreateBranch(
-  request,
-  response
-) {
-  if (request.method !== "POST") {
-    return methodNotAllowed(
-      response
-    );
-  }
-
-  return proxyRepositoryWrite(
-    request,
-    response,
-    "create-branch"
-  );
-}
-
-async function handleDeleteBranch(
-  request,
-  response
-) {
-  if (request.method !== "DELETE") {
-    return methodNotAllowed(
-      response
-    );
-  }
-
-  return proxyRepositoryWrite(
-    request,
-    response,
-    "delete-branch"
-  );
-}
-
-async function proxyRepositoryRead(
-  request,
-  response,
-  operation
-) {
   const token =
     requireAccessToken(
       request,
@@ -900,126 +768,327 @@ async function proxyRepositoryRead(
 
   const owner =
     String(
-      request.query?.owner ||
-        ""
+      request.query?.owner || ""
     ).trim();
 
   const repo =
     String(
-      request.query?.repo ||
-        ""
+      request.query?.repo || ""
+    ).trim();
+
+  const path =
+    String(
+      request.query?.path || ""
+    ).trim();
+
+  const ref =
+    String(
+      request.query?.ref || ""
     ).trim();
 
   if (
-    !isValidName(owner) ||
-    !isValidName(repo)
+    !owner ||
+    !repo ||
+    !path
   ) {
-    return sendJson(
-      response,
-      400,
-      {
-        ok: false,
-        error:
-          "A valid repository owner and name are required."
-      }
-    );
+    return response.status(400).json({
+      ok: false,
+      error:
+        "owner, repo, and path are required."
+    });
   }
 
-  let endpoint =
-    `/repos/${encodeURIComponent(
-      owner
-    )}/${encodeURIComponent(
-      repo
-    )}`;
-
-  if (operation === "tree") {
-    endpoint += "/git/trees/";
-
-    endpoint += encodeURIComponent(
-      String(
-        request.query?.sha ||
-          request.query?.branch ||
-          "HEAD"
-      )
-    );
-
-    endpoint += "?recursive=1";
+  if (
+    !isValidGitHubName(owner) ||
+    !isValidGitHubName(repo) ||
+    !isValidPath(path)
+  ) {
+    return response.status(400).json({
+      ok: false,
+      error:
+        "Invalid repository or file path."
+    });
   }
 
-  if (operation === "file") {
-    const path =
-      String(
-        request.query?.path ||
-          ""
-      ).trim();
+  if (
+    ref &&
+    !isValidRef(ref)
+  ) {
+    return response.status(400).json({
+      ok: false,
+      error:
+        "Invalid Git reference."
+    });
+  }
 
-    const ref =
-      String(
-        request.query?.ref ||
-          request.query?.branch ||
-          ""
-      ).trim();
+  try {
+    const query =
+      ref
+        ? `?ref=${encodeURIComponent(ref)}`
+        : "";
 
-    if (!path) {
-      return sendJson(
-        response,
-        400,
-        {
-          ok: false,
-          error:
-            "A repository file path is required."
-        }
+    const githubResponse =
+      await githubFetch(
+        `/repos/${encodeURIComponent(
+          owner
+        )}/${encodeURIComponent(
+          repo
+        )}/contents/${path}${query}`,
+        token
+      );
+
+    if (!githubResponse.ok) {
+      throw await githubError(
+        githubResponse,
+        "Could not read the GitHub file."
       );
     }
 
-    endpoint +=
-      `/contents/${path
-        .split("/")
-        .map(
-          encodeURIComponent
-        )
-        .join("/")}`;
+    const data =
+      await githubResponse.json();
 
-    if (ref) {
-      endpoint +=
-        `?ref=${encodeURIComponent(
-          ref
-        )}`;
+    if (
+      !data ||
+      Array.isArray(data) ||
+      data.type !== "file"
+    ) {
+      throw createError(
+        400,
+        "The requested path is not a file."
+      );
     }
-  }
 
-  const result =
-    await githubRequest(
-      endpoint,
-      {
-        method: "GET",
-        token
-      }
-    );
+    if (
+      data.encoding !== "base64" ||
+      typeof data.content !==
+        "string"
+    ) {
+      throw createError(
+        502,
+        "GitHub did not return supported file content."
+      );
+    }
 
-  if (!result.ok) {
-    return sendGitHubError(
-      response,
-      result
-    );
-  }
-
-  return sendJson(
-    response,
-    200,
-    {
+    return response.status(200).json({
       ok: true,
-      operation,
-      data: result.data
+      owner,
+      repo,
+      path:
+        typeof data.path === "string"
+          ? data.path
+          : path,
+      sha:
+        typeof data.sha === "string"
+          ? data.sha
+          : "",
+      size:
+        Number.isFinite(data.size)
+          ? data.size
+          : null,
+      encoding: "utf-8",
+      content:
+        decodeBase64(
+          data.content
+        ),
+      url:
+        typeof data.html_url ===
+        "string"
+          ? data.html_url
+          : null
+    });
+  } catch (error) {
+    if (error.status === 401) {
+      clearAccessTokenCookie(
+        response
+      );
+
+      return response.status(401).json({
+        ok: false,
+        error:
+          "GitHub authorization has expired or is invalid. Please reconnect GitHub."
+      });
     }
-  );
+
+    return response.status(
+      error.status || 502
+    ).json({
+      ok: false,
+      error:
+        error.message ||
+        "Could not read the GitHub file."
+    });
+  }
 }
 
-async function proxyRepositoryWrite(
+async function handleTree(
   request,
-  response,
-  operation
+  response
 ) {
+  if (request.method !== "GET") {
+    return methodNotAllowed(response);
+  }
+
+  const token =
+    requireAccessToken(
+      request,
+      response
+    );
+
+  if (!token) {
+    return;
+  }
+
+  const owner =
+    String(
+      request.query?.owner || ""
+    ).trim();
+
+  const repo =
+    String(
+      request.query?.repo || ""
+    ).trim();
+
+  const branch =
+    String(
+      request.query?.branch || ""
+    ).trim();
+
+  if (
+    !owner ||
+    !repo ||
+    !branch
+  ) {
+    return response.status(400).json({
+      ok: false,
+      error:
+        "owner, repo, and branch are required."
+    });
+  }
+
+  if (
+    !isValidGitHubName(owner) ||
+    !isValidGitHubName(repo) ||
+    !isValidBranchName(branch)
+  ) {
+    return response.status(400).json({
+      ok: false,
+      error:
+        "Invalid repository or branch."
+    });
+  }
+
+  try {
+    const githubResponse =
+      await githubFetch(
+        `/repos/${encodeURIComponent(
+          owner
+        )}/${encodeURIComponent(
+          repo
+        )}/git/trees/${encodeURIComponent(
+          branch
+        )}?recursive=1`,
+        token
+      );
+
+    if (!githubResponse.ok) {
+      throw await githubError(
+        githubResponse,
+        "Could not load the repository tree."
+      );
+    }
+
+    const data =
+      await githubResponse.json();
+
+    if (!Array.isArray(data.tree)) {
+      throw createError(
+        502,
+        "GitHub returned an invalid repository tree."
+      );
+    }
+
+    const entries =
+      data.tree
+        .filter(
+          (entry) =>
+            entry &&
+            (
+              entry.type === "blob" ||
+              entry.type === "tree"
+            )
+        )
+        .map(
+          (entry) => ({
+            path:
+              typeof entry.path ===
+              "string"
+                ? entry.path
+                : "",
+            type:
+              entry.type === "blob"
+                ? "file"
+                : "directory",
+            sha:
+              typeof entry.sha ===
+              "string"
+                ? entry.sha
+                : "",
+            size:
+              Number.isFinite(
+                entry.size
+              )
+                ? entry.size
+                : null,
+            url:
+              typeof entry.url ===
+              "string"
+                ? entry.url
+                : null
+          })
+        )
+        .filter(
+          (entry) => entry.path
+        );
+
+    return response.status(200).json({
+      ok: true,
+      owner,
+      repo,
+      branch,
+      entries
+    });
+  } catch (error) {
+    if (error.status === 401) {
+      clearAccessTokenCookie(
+        response
+      );
+
+      return response.status(401).json({
+        ok: false,
+        error:
+          "GitHub authorization has expired or is invalid. Please reconnect GitHub."
+      });
+    }
+
+    return response.status(
+      error.status || 502
+    ).json({
+      ok: false,
+      error:
+        error.message ||
+        "Could not load the GitHub repository tree."
+    });
+  }
+}
+
+async function handleCommit(
+  request,
+  response
+) {
+  if (request.method !== "POST") {
+    return methodNotAllowed(response);
+  }
+
   const token =
     requireAccessToken(
       request,
@@ -1031,338 +1100,1306 @@ async function proxyRepositoryWrite(
   }
 
   const body =
-    await readRequestBody(
-      request
-    );
-
-  if (!body) {
-    return sendJson(
-      response,
-      400,
-      {
-        ok: false,
-        error:
-          "A JSON request body is required."
-      }
-    );
-  }
+    request.body || {};
 
   const owner =
     String(
-      body.owner ||
-        request.query?.owner ||
-        ""
+      body.owner || ""
     ).trim();
 
   const repo =
     String(
-      body.repo ||
-        request.query?.repo ||
-        ""
+      body.repo || ""
     ).trim();
 
-  if (
-    !isValidName(owner) ||
-    !isValidName(repo)
-  ) {
-    return sendJson(
-      response,
-      400,
-      {
-        ok: false,
-        error:
-          "A valid repository owner and name are required."
-      }
-    );
-  }
+  const branch =
+    String(
+      body.branch || ""
+    ).trim();
 
-  const result =
-    await performRepositoryWrite(
-      operation,
-      owner,
-      repo,
-      body,
-      token
-    );
+  const message =
+    String(
+      body.message || ""
+    ).trim();
 
-  if (!result.ok) {
-    return sendGitHubError(
-      response,
-      result
-    );
-  }
+  const expectedHeadSha =
+    String(
+      body.expectedHeadSha || ""
+    ).trim();
 
-  return sendJson(
-    response,
-    200,
-    {
-      ok: true,
-      operation,
-      data: result.data
-    }
-  );
-}
-
-async function performRepositoryWrite(
-  operation,
-  owner,
-  repo,
-  body,
-  token
-) {
-  let endpoint =
-    `/repos/${encodeURIComponent(
-      owner
-    )}/${encodeURIComponent(
-      repo
-    )}`;
-
-  let method = "POST";
-  let payload = body;
+  const tree =
+    Array.isArray(body.tree)
+      ? body.tree
+      : [];
 
   if (
-    operation === "create-file"
+    !owner ||
+    !repo ||
+    !branch ||
+    !message ||
+    !expectedHeadSha ||
+    tree.length === 0
   ) {
-    endpoint +=
-      `/contents/${encodePath(
-        body.path
-      )}`;
-
-    method = "PUT";
-
-    payload = {
-      message:
-        body.message,
-      content:
-        body.content,
-      branch:
-        body.branch,
-      committer:
-        body.committer,
-      author:
-        body.author
-    };
+    return response.status(400).json({
+      ok: false,
+      error:
+        "owner, repo, branch, message, expectedHeadSha, and tree are required."
+    });
   }
 
   if (
-    operation === "update-file"
+    !isValidGitHubName(owner) ||
+    !isValidGitHubName(repo) ||
+    !isValidBranchName(branch) ||
+    !isValidSha(expectedHeadSha)
   ) {
-    endpoint +=
-      `/contents/${encodePath(
-        body.path
-      )}`;
-
-    method = "PUT";
-
-    payload = {
-      message:
-        body.message,
-      content:
-        body.content,
-      sha:
-        body.sha,
-      branch:
-        body.branch,
-      committer:
-        body.committer,
-      author:
-        body.author
-    };
+    return response.status(400).json({
+      ok: false,
+      error:
+        "Invalid repository, branch, or commit SHA."
+    });
   }
 
-  if (
-    operation === "delete-file"
-  ) {
-    endpoint +=
-      `/contents/${encodePath(
-        body.path
-      )}`;
-
-    method = "DELETE";
-
-    payload = {
-      message:
-        body.message,
-      sha:
-        body.sha,
-      branch:
-        body.branch
-    };
+  if (message.length > 500) {
+    return response.status(400).json({
+      ok: false,
+      error:
+        "Commit message is too long."
+    });
   }
 
-  if (
-    operation === "create-branch"
-  ) {
-    const branch =
-      String(
-        body.branch ||
-          body.name ||
-          ""
-      ).trim();
+  if (tree.length > 1000) {
+    return response.status(400).json({
+      ok: false,
+      error:
+        "A single commit cannot contain more than 1000 tree entries."
+    });
+  }
 
-    const from =
-      String(
-        body.from ||
-          body.sha ||
-          ""
-      ).trim();
+  const validationError =
+    validateTree(tree);
 
-    if (!branch || !from) {
-      return {
-        ok: false,
-        status: 400,
-        data: {
-          error:
-            "Branch name and source SHA are required."
-        }
-      };
-    }
+  if (validationError) {
+    return response.status(400).json({
+      ok: false,
+      error: validationError
+    });
+  }
 
-    const refResult =
-      await githubRequest(
+  try {
+    const refResponse =
+      await githubFetch(
         `/repos/${encodeURIComponent(
           owner
         )}/${encodeURIComponent(
           repo
         )}/git/ref/heads/${encodeURIComponent(
-          from
+          branch
         )}`,
+        token
+      );
+
+    if (!refResponse.ok) {
+      throw await githubError(
+        refResponse,
+        "Could not read the GitHub branch reference."
+      );
+    }
+
+    const refData =
+      await refResponse.json();
+
+    const currentHeadSha =
+      refData?.object?.sha;
+
+    if (
+      typeof currentHeadSha !==
+      "string"
+    ) {
+      throw createError(
+        502,
+        "GitHub did not return the current branch commit."
+      );
+    }
+
+    if (
+      currentHeadSha !==
+      expectedHeadSha
+    ) {
+      return response.status(409).json({
+        ok: false,
+        error:
+          "The branch changed on GitHub since it was read. Refresh the branch and retry.",
+        expectedHeadSha,
+        currentHeadSha
+      });
+    }
+
+    const commitResponse =
+      await githubFetch(
+        `/repos/${encodeURIComponent(
+          owner
+        )}/${encodeURIComponent(
+          repo
+        )}/git/commits/${encodeURIComponent(
+          currentHeadSha
+        )}`,
+        token
+      );
+
+    if (!commitResponse.ok) {
+      throw await githubError(
+        commitResponse,
+        "Could not read the current GitHub commit."
+      );
+    }
+
+    const commitData =
+      await commitResponse.json();
+
+    const baseTreeSha =
+      commitData?.tree?.sha;
+
+    if (
+      typeof baseTreeSha !==
+        "string" ||
+      !isValidSha(baseTreeSha)
+    ) {
+      throw createError(
+        502,
+        "GitHub did not return a valid base tree."
+      );
+    }
+
+    const treeResponse =
+      await githubFetch(
+        `/repos/${encodeURIComponent(
+          owner
+        )}/${encodeURIComponent(
+          repo
+        )}/git/trees`,
+        token,
         {
-          method: "GET",
-          token
+          method: "POST",
+          body: JSON.stringify({
+            base_tree: baseTreeSha,
+            tree
+          })
         }
       );
 
-    if (!refResult.ok) {
-      return refResult;
+    if (!treeResponse.ok) {
+      throw await githubError(
+        treeResponse,
+        "Could not create the GitHub tree."
+      );
     }
 
-    endpoint =
-      `/repos/${encodeURIComponent(
-        owner
-      )}/${encodeURIComponent(
-        repo
-      )}/git/refs`;
+    const treeData =
+      await treeResponse.json();
 
-    method = "POST";
+    const newTreeSha =
+      treeData?.sha;
 
-    payload = {
-      ref:
-        `refs/heads/${branch}`,
-      sha:
-        refResult.data?.object?.sha ||
-        from
-    };
-  }
+    if (
+      typeof newTreeSha !==
+        "string" ||
+      !isValidSha(newTreeSha)
+    ) {
+      throw createError(
+        502,
+        "GitHub did not return a valid tree SHA."
+      );
+    }
 
-  if (
-    operation === "delete-branch"
-  ) {
-    const branch =
-      String(
-        body.branch ||
-          body.name ||
-          ""
-      ).trim();
-
-    if (!branch) {
-      return {
-        ok: false,
-        status: 400,
-        data: {
-          error:
-            "Branch name is required."
+    const createCommitResponse =
+      await githubFetch(
+        `/repos/${encodeURIComponent(
+          owner
+        )}/${encodeURIComponent(
+          repo
+        )}/git/commits`,
+        token,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            message,
+            tree: newTreeSha,
+            parents: [
+              currentHeadSha
+            ]
+          })
         }
-      };
+      );
+
+    if (!createCommitResponse.ok) {
+      throw await githubError(
+        createCommitResponse,
+        "Could not create the GitHub commit."
+      );
     }
 
-    endpoint =
-      `/repos/${encodeURIComponent(
-        owner
-      )}/${encodeURIComponent(
-        repo
-      )}/git/refs/heads/${encodeURIComponent(
-        branch
-      )}`;
+    const createdCommit =
+      await createCommitResponse.json();
 
-    method = "DELETE";
+    const newCommitSha =
+      createdCommit?.sha;
 
-    payload = undefined;
-  }
-
-  if (
-    operation === "commit"
-  ) {
-    endpoint +=
-      "/git/commits";
-
-    method = "POST";
-  }
-
-  return githubRequest(
-    endpoint,
-    {
-      method,
-      token,
-      body: payload
+    if (
+      typeof newCommitSha !==
+        "string" ||
+      !isValidSha(newCommitSha)
+    ) {
+      throw createError(
+        502,
+        "GitHub did not return a valid commit SHA."
+      );
     }
-  );
+
+    const updateRefResponse =
+      await githubFetch(
+        `/repos/${encodeURIComponent(
+          owner
+        )}/${encodeURIComponent(
+          repo
+        )}/git/refs/heads/${encodeURIComponent(
+          branch
+        )}`,
+        token,
+        {
+          method: "PATCH",
+          body: JSON.stringify({
+            sha: newCommitSha,
+            force: false
+          })
+        }
+      );
+
+    if (!updateRefResponse.ok) {
+      throw await githubError(
+        updateRefResponse,
+        "The commit was created, but GitHub could not move the branch reference."
+      );
+    }
+
+    return response.status(200).json({
+      ok: true,
+      operation: "commit",
+      owner,
+      repo,
+      branch,
+      commit: {
+        sha: newCommitSha,
+        message,
+        parentSha: currentHeadSha,
+        treeSha: newTreeSha
+      }
+    });
+  } catch (error) {
+    if (error.status === 401) {
+      clearAccessTokenCookie(
+        response
+      );
+
+      return response.status(401).json({
+        ok: false,
+        error:
+          "GitHub authorization has expired or is invalid. Please reconnect GitHub."
+      });
+    }
+
+    return response.status(
+      error.status || 502
+    ).json({
+      ok: false,
+      error:
+        error.message ||
+        "Could not create the GitHub commit."
+    });
+  }
 }
 
-async function githubRequest(
-  endpoint,
-  options = {}
+async function handleCreateFile(
+  request,
+  response
 ) {
-  const headers = {
-    Accept:
-      "application/vnd.github+json",
-    "X-GitHub-Api-Version":
-      GITHUB_API_VERSION
-  };
-
-  if (options.token) {
-    headers.Authorization =
-      `Bearer ${options.token}`;
+  if (request.method !== "POST") {
+    return methodNotAllowed(response);
   }
 
-  if (
-    options.body !== undefined
-  ) {
-    headers["Content-Type"] =
-      "application/json";
-  }
-
-  const response =
-    await fetch(
-      endpoint.startsWith("http")
-        ? endpoint
-        : `${GITHUB_API}${endpoint}`,
-      {
-        method:
-          options.method || "GET",
-        headers,
-        body:
-          options.body !== undefined
-            ? JSON.stringify(
-                cleanObject(
-                  options.body
-                )
-              )
-            : undefined
-      }
-    );
-
-  const data =
-    await readResponseJson(
+  const token =
+    requireAccessToken(
+      request,
       response
     );
 
+  if (!token) {
+    return;
+  }
+
+  const body =
+    request.body || {};
+
+  const owner =
+    String(body.owner || "").trim();
+
+  const repo =
+    String(body.repo || "").trim();
+
+  const path =
+    String(body.path || "").trim();
+
+  const content =
+    typeof body.content === "string"
+      ? body.content
+      : "";
+
+  const message =
+    String(body.message || "").trim();
+
+  const branch =
+    String(body.branch || "").trim();
+
+  if (
+    !owner ||
+    !repo ||
+    !path ||
+    !message ||
+    !branch
+  ) {
+    return response.status(400).json({
+      ok: false,
+      error:
+        "owner, repo, path, message, and branch are required."
+    });
+  }
+
+  if (
+    !isValidGitHubName(owner) ||
+    !isValidGitHubName(repo) ||
+    !isValidPath(path) ||
+    !isValidBranchName(branch)
+  ) {
+    return response.status(400).json({
+      ok: false,
+      error:
+        "Invalid repository, branch, or file path."
+    });
+  }
+
+  if (message.length > 500) {
+    return response.status(400).json({
+      ok: false,
+      error:
+        "Commit message is too long."
+    });
+  }
+
+  try {
+    const existing =
+      await getCurrentFile(
+        token,
+        owner,
+        repo,
+        path,
+        branch
+      );
+
+    if (existing.exists) {
+      return response.status(409).json({
+        ok: false,
+        error:
+          "A file already exists at this path. Use the update-file operation instead.",
+        sha: existing.sha
+      });
+    }
+
+    const githubResponse =
+      await githubFetch(
+        `/repos/${encodeURIComponent(
+          owner
+        )}/${encodeURIComponent(
+          repo
+        )}/contents/${path}`,
+        token,
+        {
+          method: "PUT",
+          body: JSON.stringify({
+            message,
+            content:
+              encodeBase64(content),
+            branch
+          })
+        }
+      );
+
+    if (!githubResponse.ok) {
+      throw await githubError(
+        githubResponse,
+        "Could not create the GitHub file."
+      );
+    }
+
+    const data =
+      await githubResponse.json();
+
+    return response.status(201).json({
+      ok: true,
+      operation: "create",
+      owner,
+      repo,
+      branch,
+      path,
+      commit: {
+        sha:
+          typeof data.commit?.sha ===
+          "string"
+            ? data.commit.sha
+            : null,
+        message:
+          typeof data.commit?.message ===
+          "string"
+            ? data.commit.message
+            : message
+      },
+      file: {
+        path:
+          typeof data.content?.path ===
+          "string"
+            ? data.content.path
+            : path,
+        sha:
+          typeof data.content?.sha ===
+          "string"
+            ? data.content.sha
+            : null
+      }
+    });
+  } catch (error) {
+    return response.status(
+      error.status || 502
+    ).json({
+      ok: false,
+      error:
+        error.message ||
+        "Could not create the GitHub file."
+    });
+  }
+}
+
+async function handleUpdateFile(
+  request,
+  response
+) {
+  if (request.method !== "POST") {
+    return methodNotAllowed(response);
+  }
+
+  const token =
+    requireAccessToken(
+      request,
+      response
+    );
+
+  if (!token) {
+    return;
+  }
+
+  const body =
+    request.body || {};
+
+  const owner =
+    String(body.owner || "").trim();
+
+  const repo =
+    String(body.repo || "").trim();
+
+  const path =
+    String(body.path || "").trim();
+
+  const content =
+    typeof body.content === "string"
+      ? body.content
+      : "";
+
+  const message =
+    String(body.message || "").trim();
+
+  const branch =
+    String(body.branch || "").trim();
+
+  const expectedSha =
+    String(body.sha || "").trim();
+
+  if (
+    !owner ||
+    !repo ||
+    !path ||
+    !message ||
+    !branch ||
+    !expectedSha
+  ) {
+    return response.status(400).json({
+      ok: false,
+      error:
+        "owner, repo, path, message, branch, and sha are required."
+    });
+  }
+
+  if (
+    !isValidGitHubName(owner) ||
+    !isValidGitHubName(repo) ||
+    !isValidPath(path) ||
+    !isValidBranchName(branch) ||
+    !isValidSha(expectedSha)
+  ) {
+    return response.status(400).json({
+      ok: false,
+      error:
+        "Invalid repository, branch, file path, or file SHA."
+    });
+  }
+
+  if (message.length > 500) {
+    return response.status(400).json({
+      ok: false,
+      error:
+        "Commit message is too long."
+    });
+  }
+
+  try {
+    const current =
+      await getCurrentFile(
+        token,
+        owner,
+        repo,
+        path,
+        branch
+      );
+
+    if (!current.exists) {
+      return response.status(404).json({
+        ok: false,
+        error:
+          "The file does not exist. Use the create-file operation instead."
+      });
+    }
+
+    if (current.type !== "file") {
+      return response.status(400).json({
+        ok: false,
+        error:
+          "The requested path is not a file."
+      });
+    }
+
+    if (
+      current.sha !== expectedSha
+    ) {
+      return response.status(409).json({
+        ok: false,
+        error:
+          "File changed on GitHub since it was read. Refresh the file and retry.",
+        expectedSha,
+        currentSha: current.sha
+      });
+    }
+
+    const githubResponse =
+      await githubFetch(
+        `/repos/${encodeURIComponent(
+          owner
+        )}/${encodeURIComponent(
+          repo
+        )}/contents/${path}`,
+        token,
+        {
+          method: "PUT",
+          body: JSON.stringify({
+            message,
+            content:
+              encodeBase64(content),
+            sha: expectedSha,
+            branch
+          })
+        }
+      );
+
+    if (!githubResponse.ok) {
+      throw await githubError(
+        githubResponse,
+        "Could not update the GitHub file."
+      );
+    }
+
+    const data =
+      await githubResponse.json();
+
+    return response.status(200).json({
+      ok: true,
+      operation: "update",
+      owner,
+      repo,
+      branch,
+      path,
+      commit: {
+        sha:
+          typeof data.commit?.sha ===
+          "string"
+            ? data.commit.sha
+            : null,
+        message:
+          typeof data.commit?.message ===
+          "string"
+            ? data.commit.message
+            : message
+      },
+      file: {
+        path:
+          typeof data.content?.path ===
+          "string"
+            ? data.content.path
+            : path,
+        sha:
+          typeof data.content?.sha ===
+          "string"
+            ? data.content.sha
+            : null
+      }
+    });
+  } catch (error) {
+    return response.status(
+      error.status || 502
+    ).json({
+      ok: false,
+      error:
+        error.message ||
+        "Could not update the GitHub file."
+    });
+  }
+}
+
+async function handleDeleteFile(
+  request,
+  response
+) {
+  if (request.method !== "POST") {
+    return methodNotAllowed(response);
+  }
+
+  const token =
+    requireAccessToken(
+      request,
+      response
+    );
+
+  if (!token) {
+    return;
+  }
+
+  const body =
+    request.body || {};
+
+  const owner =
+    String(body.owner || "").trim();
+
+  const repo =
+    String(body.repo || "").trim();
+
+  const path =
+    String(body.path || "").trim();
+
+  const message =
+    String(body.message || "").trim();
+
+  const branch =
+    String(body.branch || "").trim();
+
+  const expectedSha =
+    String(body.sha || "").trim();
+
+  if (
+    !owner ||
+    !repo ||
+    !path ||
+    !message ||
+    !branch ||
+    !expectedSha
+  ) {
+    return response.status(400).json({
+      ok: false,
+      error:
+        "owner, repo, path, message, branch, and sha are required."
+    });
+  }
+
+  if (
+    !isValidGitHubName(owner) ||
+    !isValidGitHubName(repo) ||
+    !isValidPath(path) ||
+    !isValidBranchName(branch) ||
+    !isValidSha(expectedSha)
+  ) {
+    return response.status(400).json({
+      ok: false,
+      error:
+        "Invalid repository, branch, file path, or file SHA."
+    });
+  }
+
+  if (message.length > 500) {
+    return response.status(400).json({
+      ok: false,
+      error:
+        "Commit message is too long."
+    });
+  }
+
+  try {
+    const current =
+      await getCurrentFile(
+        token,
+        owner,
+        repo,
+        path,
+        branch
+      );
+
+    if (!current.exists) {
+      return response.status(404).json({
+        ok: false,
+        error:
+          "The file does not exist or has already been deleted."
+      });
+    }
+
+    if (current.type !== "file") {
+      return response.status(400).json({
+        ok: false,
+        error:
+          "The requested path is not a file."
+      });
+    }
+
+    if (
+      current.sha !== expectedSha
+    ) {
+      return response.status(409).json({
+        ok: false,
+        error:
+          "File changed on GitHub since it was read. Refresh the file and retry.",
+        expectedSha,
+        currentSha: current.sha
+      });
+    }
+
+    const githubResponse =
+      await githubFetch(
+        `/repos/${encodeURIComponent(
+          owner
+        )}/${encodeURIComponent(
+          repo
+        )}/contents/${path}`,
+        token,
+        {
+          method: "DELETE",
+          body: JSON.stringify({
+            message,
+            sha: expectedSha,
+            branch
+          })
+        }
+      );
+
+    if (!githubResponse.ok) {
+      throw await githubError(
+        githubResponse,
+        "Could not delete the GitHub file."
+      );
+    }
+
+    const data =
+      await githubResponse.json();
+
+    return response.status(200).json({
+      ok: true,
+      operation: "delete",
+      owner,
+      repo,
+      branch,
+      path,
+      commit: {
+        sha:
+          typeof data.commit?.sha ===
+          "string"
+            ? data.commit.sha
+            : null,
+        message:
+          typeof data.commit?.message ===
+          "string"
+            ? data.commit.message
+            : message
+      },
+      file: {
+        path:
+          typeof data.content?.path ===
+          "string"
+            ? data.content.path
+            : path,
+        deleted: true
+      }
+    });
+  } catch (error) {
+    return response.status(
+      error.status || 502
+    ).json({
+      ok: false,
+      error:
+        error.message ||
+        "Could not delete the GitHub file."
+    });
+  }
+}
+
+async function handleCreateBranch(
+  request,
+  response
+) {
+  if (request.method !== "POST") {
+    return methodNotAllowed(response);
+  }
+
+  const token =
+    requireAccessToken(
+      request,
+      response
+    );
+
+  if (!token) {
+    return;
+  }
+
+  const body =
+    request.body || {};
+
+  const owner =
+    String(body.owner || "").trim();
+
+  const repo =
+    String(body.repo || "").trim();
+
+  const branch =
+    String(body.branch || "").trim();
+
+  const fromBranch =
+    String(
+      body.fromBranch || ""
+    ).trim();
+
+  const fromSha =
+    String(
+      body.fromSha || ""
+    ).trim();
+
+  if (
+    !owner ||
+    !repo ||
+    !branch ||
+    (!fromBranch && !fromSha)
+  ) {
+    return response.status(400).json({
+      ok: false,
+      error:
+        "owner, repo, branch, and either fromBranch or fromSha are required."
+    });
+  }
+
+  if (
+    !isValidGitHubName(owner) ||
+    !isValidGitHubName(repo) ||
+    !isValidBranchName(branch)
+  ) {
+    return response.status(400).json({
+      ok: false,
+      error:
+        "Invalid repository or branch name."
+    });
+  }
+
+  if (
+    fromSha &&
+    !isValidSha(fromSha)
+  ) {
+    return response.status(400).json({
+      ok: false,
+      error:
+        "Invalid source commit SHA."
+    });
+  }
+
+  try {
+    let sourceSha = fromSha;
+
+    if (!sourceSha) {
+      if (
+        !isValidBranchName(
+          fromBranch
+        )
+      ) {
+        return response.status(400).json({
+          ok: false,
+          error:
+            "Invalid source branch name."
+        });
+      }
+
+      const sourceResponse =
+        await githubFetch(
+          `/repos/${encodeURIComponent(
+            owner
+          )}/${encodeURIComponent(
+            repo
+          )}/git/ref/heads/${encodeURIComponent(
+            fromBranch
+          )}`,
+          token
+        );
+
+      if (!sourceResponse.ok) {
+        throw await githubError(
+          sourceResponse,
+          "Could not read the source branch."
+        );
+      }
+
+      const sourceData =
+        await sourceResponse.json();
+
+      sourceSha =
+        sourceData?.object?.sha;
+
+      if (
+        typeof sourceSha !==
+          "string" ||
+        !isValidSha(sourceSha)
+      ) {
+        throw createError(
+          502,
+          "GitHub did not return a valid source commit."
+        );
+      }
+    }
+
+    const existingResponse =
+      await githubFetch(
+        `/repos/${encodeURIComponent(
+          owner
+        )}/${encodeURIComponent(
+          repo
+        )}/git/ref/heads/${encodeURIComponent(
+          branch
+        )}`,
+        token
+      );
+
+    if (existingResponse.ok) {
+      return response.status(409).json({
+        ok: false,
+        error:
+          "That branch already exists.",
+        branch
+      });
+    }
+
+    if (
+      existingResponse.status !== 404
+    ) {
+      throw await githubError(
+        existingResponse,
+        "Could not check whether the branch already exists."
+      );
+    }
+
+    const createResponse =
+      await githubFetch(
+        `/repos/${encodeURIComponent(
+          owner
+        )}/${encodeURIComponent(
+          repo
+        )}/git/refs`,
+        token,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            ref:
+              `refs/heads/${branch}`,
+            sha: sourceSha
+          })
+        }
+      );
+
+    if (!createResponse.ok) {
+      throw await githubError(
+        createResponse,
+        "Could not create the GitHub branch."
+      );
+    }
+
+    const createdData =
+      await createResponse.json();
+
+    const createdSha =
+      createdData?.object?.sha;
+
+    if (
+      typeof createdSha !==
+        "string" ||
+      !isValidSha(createdSha)
+    ) {
+      throw createError(
+        502,
+        "GitHub did not return a valid created branch SHA."
+      );
+    }
+
+    return response.status(201).json({
+      ok: true,
+      operation: "create-branch",
+      owner,
+      repo,
+      branch,
+      sourceSha,
+      sha: createdSha
+    });
+  } catch (error) {
+    return response.status(
+      error.status || 502
+    ).json({
+      ok: false,
+      error:
+        error.message ||
+        "Could not create the GitHub branch."
+    });
+  }
+}
+
+async function handleDeleteBranch(
+  request,
+  response
+) {
+  if (request.method !== "POST") {
+    return methodNotAllowed(response);
+  }
+
+  const token =
+    requireAccessToken(
+      request,
+      response
+    );
+
+  if (!token) {
+    return;
+  }
+
+  const body =
+    request.body || {};
+
+  const owner =
+    String(body.owner || "").trim();
+
+  const repo =
+    String(body.repo || "").trim();
+
+  const branch =
+    String(body.branch || "").trim();
+
+  if (
+    !owner ||
+    !repo ||
+    !branch
+  ) {
+    return response.status(400).json({
+      ok: false,
+      error:
+        "owner, repo, and branch are required."
+    });
+  }
+
+  if (
+    !isValidGitHubName(owner) ||
+    !isValidGitHubName(repo) ||
+    !isValidBranchName(branch)
+  ) {
+    return response.status(400).json({
+      ok: false,
+      error:
+        "Invalid repository or branch name."
+    });
+  }
+
+  if (
+    branch === "main" ||
+    branch === "master"
+  ) {
+    return response.status(400).json({
+      ok: false,
+      error:
+        "The default branch cannot be deleted through this endpoint."
+    });
+  }
+
+  try {
+    const repoResponse =
+      await githubFetch(
+        `/repos/${encodeURIComponent(
+          owner
+        )}/${encodeURIComponent(repo)}`,
+        token
+      );
+
+    if (!repoResponse.ok) {
+      throw await githubError(
+        repoResponse,
+        "Could not read the repository."
+      );
+    }
+
+    const repoData =
+      await repoResponse.json();
+
+    const defaultBranch =
+      typeof repoData?.default_branch ===
+      "string"
+        ? repoData.default_branch
+        : "";
+
+    if (
+      defaultBranch === branch
+    ) {
+      return response.status(400).json({
+        ok: false,
+        error:
+          "The repository default branch cannot be deleted."
+      });
+    }
+
+    const branchResponse =
+      await githubFetch(
+        `/repos/${encodeURIComponent(
+          owner
+        )}/${encodeURIComponent(
+          repo
+        )}/git/ref/heads/${encodeURIComponent(
+          branch
+        )}`,
+        token
+      );
+
+    if (!branchResponse.ok) {
+      throw await githubError(
+        branchResponse,
+        "Could not find the branch."
+      );
+    }
+
+    const deleteResponse =
+      await githubFetch(
+        `/repos/${encodeURIComponent(
+          owner
+        )}/${encodeURIComponent(repo)}/git/refs/heads/${encodeURIComponent(
+          branch
+        )}`,
+        token,
+        {
+          method: "DELETE"
+        }
+      );
+
+    if (!deleteResponse.ok) {
+      throw await githubError(
+        deleteResponse,
+        "Could not delete the GitHub branch."
+      );
+    }
+
+    return response.status(200).json({
+      ok: true,
+      operation: "delete-branch",
+      owner,
+      repo,
+      branch,
+      deleted: true
+    });
+  } catch (error) {
+    return response.status(
+      error.status || 502
+    ).json({
+      ok: false,
+      error:
+        error.message ||
+        "Could not delete the GitHub branch."
+    });
+  }
+}
+
+async function getCurrentFile(
+  token,
+  owner,
+  repo,
+  path,
+  branch
+) {
+  const githubResponse =
+    await githubFetch(
+      `/repos/${encodeURIComponent(
+        owner
+      )}/${encodeURIComponent(
+        repo
+      )}/contents/${path}?ref=${encodeURIComponent(
+        branch
+      )}`,
+      token
+    );
+
+  if (
+    githubResponse.status === 404
+  ) {
+    return {
+      exists: false,
+      type: null,
+      sha: null
+    };
+  }
+
+  if (!githubResponse.ok) {
+    throw await githubError(
+      githubResponse,
+      "Could not check the current GitHub file."
+    );
+  }
+
+  const data =
+    await githubResponse.json();
+
+  if (Array.isArray(data)) {
+    return {
+      exists: true,
+      type: "directory",
+      sha: null
+    };
+  }
+
   return {
-    ok:
-      response.ok,
-    status:
-      response.status,
-    data
+    exists: true,
+    type:
+      typeof data?.type === "string"
+        ? data.type
+        : null,
+    sha:
+      typeof data?.sha === "string"
+        ? data.sha
+        : null
   };
 }
 
@@ -1374,15 +2411,11 @@ function requireAccessToken(
     getAccessToken(request);
 
   if (!token) {
-    sendJson(
-      response,
-      401,
-      {
-        ok: false,
-        error:
-          "GitHub is not connected."
-      }
-    );
+    response.status(401).json({
+      ok: false,
+      error:
+        "GitHub is not connected."
+    });
 
     return "";
   }
@@ -1393,26 +2426,105 @@ function requireAccessToken(
 function getAccessToken(
   request
 ) {
-  const cookies =
-    parseCookies(
-      request.headers.cookie || ""
-    );
-
-  return (
-    cookies[ACCESS_TOKEN_COOKIE] ||
-    ""
+  return getCookie(
+    request.headers?.cookie || "",
+    ACCESS_TOKEN_COOKIE
   );
 }
 
-function parseCookies(
-  cookieHeader
+async function githubFetch(
+  path,
+  accessToken,
+  options = {}
 ) {
-  const cookies = {};
+  return fetch(
+    `${GITHUB_API}${path}`,
+    {
+      method:
+        options.method || "GET",
+      headers: {
+        Accept:
+          "application/vnd.github+json",
+        Authorization:
+          `Bearer ${accessToken}`,
+        "X-GitHub-Api-Version":
+          GITHUB_API_VERSION,
+        ...(options.body
+          ? {
+              "Content-Type":
+                "application/json"
+            }
+          : {})
+      },
+      ...(options.body
+        ? {
+            body: options.body
+          }
+        : {})
+    }
+  );
+}
+
+async function githubError(
+  response,
+  fallbackMessage
+) {
+  let message =
+    fallbackMessage;
+
+  try {
+    const data =
+      await response.json();
+
+    if (
+      typeof data?.message ===
+        "string" &&
+      data.message
+    ) {
+      message = data.message;
+    }
+  } catch {
+    // Keep fallback.
+  }
+
+  return createError(
+    response.status,
+    message
+  );
+}
+
+function createError(
+  status,
+  message
+) {
+  const error =
+    new Error(message);
+
+  error.status = status;
+
+  return error;
+}
+
+function methodNotAllowed(
+  response
+) {
+  return response.status(405).json({
+    ok: false,
+    error: "Method not allowed."
+  });
+}
+
+function getCookie(
+  cookieHeader,
+  name
+) {
+  if (!cookieHeader) {
+    return "";
+  }
 
   for (
-    const part of cookieHeader.split(
-      ";"
-    )
+    const part of
+      cookieHeader.split(";")
   ) {
     const separator =
       part.indexOf("=");
@@ -1421,32 +2533,95 @@ function parseCookies(
       continue;
     }
 
-    const name =
+    const key =
       part
         .slice(0, separator)
         .trim();
+
+    if (key !== name) {
+      continue;
+    }
 
     const value =
       part
         .slice(separator + 1)
         .trim();
 
-    if (!name) {
-      continue;
-    }
-
     try {
-      cookies[name] =
-        decodeURIComponent(
-          value
-        );
+      return decodeURIComponent(
+        value
+      );
     } catch {
-      cookies[name] =
-        value;
+      return value;
     }
   }
 
-  return cookies;
+  return "";
+}
+
+function serializeCookie(
+  name,
+  value,
+  options = {}
+) {
+  let cookie =
+    `${name}=${encodeURIComponent(
+      value
+    )}; Path=/`;
+
+  if (options.httpOnly) {
+    cookie += "; HttpOnly";
+  }
+
+  if (options.secure) {
+    cookie += "; Secure";
+  }
+
+  if (options.sameSite) {
+    cookie +=
+      `; SameSite=${options.sameSite}`;
+  }
+
+  if (
+    Number.isFinite(
+      options.maxAge
+    )
+  ) {
+    cookie +=
+      `; Max-Age=${Math.floor(
+        options.maxAge
+      )}`;
+  }
+
+  return cookie;
+}
+
+function clearCookie(
+  response,
+  name
+) {
+  response.setHeader(
+    "Set-Cookie",
+    serializeCookie(
+      name,
+      "",
+      {
+        httpOnly: true,
+        secure: true,
+        sameSite: "Lax",
+        maxAge: 0
+      }
+    )
+  );
+}
+
+function clearAccessTokenCookie(
+  response
+) {
+  clearCookie(
+    response,
+    ACCESS_TOKEN_COOKIE
+  );
 }
 
 function createRandomState() {
@@ -1468,13 +2643,13 @@ function createRandomState() {
 }
 
 function timingSafeEqual(
-  left,
-  right
+  a,
+  b
 ) {
   if (
-    typeof left !== "string" ||
-    typeof right !== "string" ||
-    left.length !== right.length
+    typeof a !== "string" ||
+    typeof b !== "string" ||
+    a.length !== b.length
   ) {
     return false;
   }
@@ -1483,210 +2658,267 @@ function timingSafeEqual(
 
   for (
     let index = 0;
-    index < left.length;
+    index < a.length;
     index += 1
   ) {
     result |=
-      left.charCodeAt(index) ^
-      right.charCodeAt(index);
+      a.charCodeAt(index) ^
+      b.charCodeAt(index);
   }
 
   return result === 0;
 }
 
-function isValidName(
+function isValidGitHubName(
   value
 ) {
   return (
     typeof value === "string" &&
     value.length > 0 &&
     value.length <= 100 &&
-    /^[A-Za-z0-9_.-]+$/.test(
-      value
-    )
+    /^[A-Za-z0-9_.-]+$/.test(value)
   );
 }
 
-function encodePath(
+function isValidPath(
   value
 ) {
-  return String(
-    value || ""
-  )
-    .split("/")
-    .map(
-      encodeURIComponent
-    )
-    .join("/");
-}
-
-async function readRequestBody(
-  request
-) {
   if (
-    request.body &&
-    typeof request.body ===
-      "object"
+    typeof value !== "string" ||
+    value.length < 1 ||
+    value.length > 1000
   ) {
-    return request.body;
+    return false;
   }
 
+  return !(
+    value.startsWith("/") ||
+    value.endsWith("/") ||
+    value.includes("\\") ||
+    value.includes("\0") ||
+    value.includes("..")
+  );
+}
+
+function isValidRef(
+  value
+) {
   if (
-    typeof request.body ===
-      "string"
+    typeof value !== "string" ||
+    value.length < 1 ||
+    value.length > 255
   ) {
-    try {
-      return JSON.parse(
-        request.body
+    return false;
+  }
+
+  return !(
+    value.includes("\0") ||
+    value.includes("\\") ||
+    value.includes("..") ||
+    value.includes("//") ||
+    value.startsWith("/") ||
+    value.endsWith("/") ||
+    value.endsWith(".") ||
+    value.includes(" ") ||
+    value.includes("~") ||
+    value.includes("^") ||
+    value.includes(":") ||
+    value.includes("?") ||
+    value.includes("*") ||
+    value.includes("[")
+  );
+}
+
+function isValidBranchName(
+  value
+) {
+  if (
+    typeof value !== "string" ||
+    value.length < 1 ||
+    value.length > 255
+  ) {
+    return false;
+  }
+
+  return !(
+    value.startsWith("/") ||
+    value.endsWith("/") ||
+    value.includes("..") ||
+    value.includes("//") ||
+    value.includes("\\") ||
+    value.includes("\0") ||
+    value.includes("~") ||
+    value.includes("^") ||
+    value.includes(":") ||
+    value.includes("?") ||
+    value.includes("*") ||
+    value.includes("[") ||
+    value.endsWith(".") ||
+    value.includes("@{")
+  );
+}
+
+function isValidSha(
+  value
+) {
+  return (
+    typeof value === "string" &&
+    /^[a-fA-F0-9]{40}$/.test(value)
+  );
+}
+
+function validateTree(
+  tree
+) {
+  for (const entry of tree) {
+    if (
+      !entry ||
+      typeof entry !== "object"
+    ) {
+      return (
+        "Every tree entry must be an object."
       );
-    } catch {
-      return null;
+    }
+
+    const path =
+      typeof entry.path === "string"
+        ? entry.path.trim()
+        : "";
+
+    const mode =
+      typeof entry.mode === "string"
+        ? entry.mode
+        : "";
+
+    const type =
+      typeof entry.type === "string"
+        ? entry.type
+        : "";
+
+    const sha =
+      entry.sha === null
+        ? null
+        : typeof entry.sha ===
+          "string"
+          ? entry.sha.trim()
+          : "";
+
+    if (!path) {
+      return (
+        "Every tree entry requires a path."
+      );
+    }
+
+    if (!isValidPath(path)) {
+      return `Invalid tree path: ${path}`;
+    }
+
+    if (
+      mode !== "100644" &&
+      mode !== "100755" &&
+      mode !== "040000" &&
+      mode !== "160000" &&
+      mode !== "120000"
+    ) {
+      return (
+        `Invalid tree mode for ${path}.`
+      );
+    }
+
+    if (
+      type !== "blob" &&
+      type !== "tree" &&
+      type !== "commit"
+    ) {
+      return (
+        `Invalid tree type for ${path}.`
+      );
+    }
+
+    if (
+      sha !== null &&
+      !isValidSha(sha)
+    ) {
+      return (
+        `Invalid tree SHA for ${path}.`
+      );
+    }
+
+    if (
+      sha === null &&
+      type !== "blob"
+    ) {
+      return (
+        `A null SHA is only valid for blob entries: ${path}`
+      );
     }
   }
 
-  return {};
+  return "";
 }
 
-async function readResponseJson(
-  response
-) {
-  const text =
-    await response.text();
-
-  if (!text) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(
-      text
-    );
-  } catch {
-    return {
-      raw:
-        text
-    };
-  }
-}
-
-function cleanObject(
+function encodeBase64(
   value
 ) {
-  if (
-    !value ||
-    typeof value !==
-      "object" ||
-    Array.isArray(value)
-  ) {
-    return value;
-  }
+  const bytes =
+    new TextEncoder().encode(
+      value
+    );
 
-  const result = {};
+  let binary = "";
+
+  const chunkSize =
+    0x8000;
 
   for (
-    const [
-      key,
-      item
-    ] of Object.entries(value)
+    let index = 0;
+    index < bytes.length;
+    index += chunkSize
   ) {
-    if (
-      item === undefined ||
-      item === null
-    ) {
-      continue;
-    }
+    const chunk =
+      bytes.subarray(
+        index,
+        Math.min(
+          index + chunkSize,
+          bytes.length
+        )
+      );
 
-    result[key] =
-      typeof item ===
-        "object" &&
-      !Array.isArray(item)
-        ? cleanObject(item)
-        : item;
-  }
-
-  return result;
-}
-
-function sendGitHubError(
-  response,
-  result
-) {
-  let status =
-    result.status || 502;
-
-  if (
-    status >= 400 &&
-    status < 500
-  ) {
-    return sendJson(
-      response,
-      status,
-      {
-        ok: false,
-        error:
-          getGitHubErrorMessage(
-            result
-          )
-      }
+    binary += String.fromCharCode(
+      ...chunk
     );
   }
 
-  return sendJson(
-    response,
-    502,
-    {
-      ok: false,
-      error:
-        "GitHub request failed."
-    }
+  return globalThis.btoa(
+    binary
   );
 }
 
-function getGitHubErrorMessage(
-  result
+function decodeBase64(
+  value
 ) {
-  if (
-    typeof result.data?.message ===
-    "string"
-  ) {
-    return result.data.message;
-  }
+  const normalized =
+    value.replace(
+      /\s+/g,
+      ""
+    );
 
-  if (
-    result.status === 401
-  ) {
-    return "GitHub authentication has expired. Please connect GitHub again.";
-  }
+  const binary =
+    globalThis.atob(
+      normalized
+    );
 
-  if (
-    result.status === 404
-  ) {
-    return "Repository or requested GitHub resource was not found.";
-  }
+  const bytes =
+    Uint8Array.from(
+      binary,
+      (character) =>
+        character.charCodeAt(0)
+    );
 
-  return "GitHub request failed.";
-}
-
-function methodNotAllowed(
-  response
-) {
-  return sendJson(
-    response,
-    405,
+  return new TextDecoder(
+    "utf-8",
     {
-      ok: false,
-      error:
-        "Method not allowed."
+      fatal: false
     }
-  );
-}
-
-function sendJson(
-  response,
-  status,
-  data
-) {
-  return response
-    .status(status)
-    .json(data);
-}
+  ).decode(bytes);
+      }
