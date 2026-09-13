@@ -45,16 +45,12 @@ export async function runAgent(message) {
   setBusy(true);
 
   try {
-    updateProgress(
-      "Repository inspect kar raha hoon..."
-    );
     appendProgress(
       "Repository inspect kar raha hoon..."
     );
 
-    const plan = await createPlan(
-      cleanMessage
-    );
+    const plan =
+      await createPlan(cleanMessage);
 
     state.agent.plan = plan;
     state.agent.phase = "planned";
@@ -136,7 +132,8 @@ export async function runAgent(message) {
         state.agent.permission
     };
   } catch (error) {
-    state.agent.phase = "error";
+    state.agent.phase =
+      "error";
 
     console.error(
       "Agent workflow failed:",
@@ -286,7 +283,7 @@ export async function requestPermission(
 ) {
   if (
     state.agent.phase !==
-    "permission-required"
+      "permission-required"
   ) {
     throw new Error(
       "There is no pending change set requiring permission."
@@ -297,7 +294,8 @@ export async function requestPermission(
     state.agent.changes;
 
   if (
-    !Array.isArray(changes)
+    !Array.isArray(changes) ||
+    changes.length === 0
   ) {
     throw new Error(
       "No valid changes are available."
@@ -383,7 +381,7 @@ export async function requestPermission(
     "permission-granted";
 
   updateProgress(
-    "Permission granted. Write step abhi separate apply phase mein hoga."
+    "Permission granted. Apply step start kar raha hoon..."
   );
 
   appendMessage(
@@ -393,6 +391,259 @@ export async function requestPermission(
       data
     )
   );
+
+  return data;
+}
+
+export async function applyChanges(
+  mode = "allow_once"
+) {
+  if (
+    state.agent.phase !==
+    "permission-required"
+  ) {
+    throw new Error(
+      "Apply karne ke liye pending changes aur permission required hai."
+    );
+  }
+
+  const changes =
+    getPendingChanges();
+
+  if (
+    changes.length === 0
+  ) {
+    throw new Error(
+      "Apply karne ke liye koi changes nahi hain."
+    );
+  }
+
+  setBusy(true);
+
+  try {
+    if (
+      mode !== "allow_once" &&
+      mode !== "allow_for_task"
+    ) {
+      throw new Error(
+        "Invalid apply permission mode."
+      );
+    }
+
+    updateProgress(
+      "GitHub write permission verify kar raha hoon..."
+    );
+
+    await requestPermission(
+      mode
+    );
+
+    if (
+      state.agent.phase !==
+      "permission-granted"
+    ) {
+      throw new Error(
+        "GitHub write permission grant nahi hui."
+      );
+    }
+
+    updateProgress(
+      "Approved changes GitHub par apply kar raha hoon..."
+    );
+
+    const response =
+      await fetch(
+        "/api/agent/apply",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type":
+              "application/json",
+            Accept:
+              "application/json"
+          },
+          body: JSON.stringify({
+            owner:
+              getOwner(),
+            repo:
+              getRepo(),
+            branch:
+              state.selectedBranch,
+            message:
+              buildCommitMessage(),
+            changes
+          })
+        }
+      );
+
+    const data =
+      await readJson(response);
+
+    if (
+      !response.ok ||
+      !data?.ok
+    ) {
+      throw new Error(
+        data?.error ||
+          "GitHub apply failed."
+      );
+    }
+
+    if (
+      !data.commit ||
+      typeof data.commit.sha !==
+        "string"
+    ) {
+      throw new Error(
+        "GitHub apply returned an invalid commit."
+      );
+    }
+
+    state.agent.applied =
+      true;
+
+    state.agent.phase =
+      "applied";
+
+    updateProgress(
+      "GitHub commit verify kar raha hoon..."
+    );
+
+    const verification =
+      await verifyChanges(
+        data.commit.sha,
+        changes
+      );
+
+    if (
+      !verification.verified
+    ) {
+      state.agent.phase =
+        "verification-failed";
+
+      throw new Error(
+        verification.error ||
+          "GitHub changes apply ho gayi hain lekin verification fail ho gayi."
+      );
+    }
+
+    state.agent.phase =
+      "completed";
+
+    removeProgress();
+
+    appendMessage(
+      "assistant",
+      formatApplyResult(
+        data,
+        verification
+      )
+    );
+
+    showGlobalMessage(
+      "Changes successfully apply aur verify ho gayi hain.",
+      "success"
+    );
+
+    return {
+      apply: data,
+      verification
+    };
+  } catch (error) {
+    if (
+      state.agent.phase !==
+      "verification-failed"
+    ) {
+      state.agent.phase =
+        "error";
+    }
+
+    console.error(
+      "Agent apply workflow failed:",
+      error
+    );
+
+    removeProgress();
+
+    appendMessage(
+      "error",
+      error.message ||
+        "GitHub apply workflow failed."
+    );
+
+    showGlobalMessage(
+      error.message ||
+        "GitHub apply workflow failed.",
+      "error"
+    );
+
+    throw error;
+  } finally {
+    setBusy(false);
+  }
+}
+
+export async function verifyChanges(
+  commitSha,
+  changes = state.agent.changes
+) {
+  if (
+    !isValidSha(commitSha)
+  ) {
+    throw new Error(
+      "Invalid commit SHA returned by GitHub."
+    );
+  }
+
+  if (
+    !Array.isArray(changes) ||
+    changes.length === 0
+  ) {
+    throw new Error(
+      "No changes available for verification."
+    );
+  }
+
+  const response =
+    await fetch(
+      "/api/agent/verify",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type":
+            "application/json",
+          Accept:
+            "application/json"
+        },
+        body: JSON.stringify({
+          owner:
+            getOwner(),
+          repo:
+            getRepo(),
+          branch:
+            state.selectedBranch,
+          commitSha,
+          changes
+        })
+      }
+    );
+
+  const data =
+    await readJson(response);
+
+  if (
+    !response.ok ||
+    !data?.ok ||
+    !data?.verified
+  ) {
+    return {
+      ...data,
+      verified: false,
+      error:
+        data?.error ||
+        "Post-apply verification failed."
+    };
+  }
 
   return data;
 }
@@ -432,16 +683,17 @@ function buildPermissionRequest(
     mode: "always_ask",
     changeCount:
       changes.length,
-    changes: changes.map(
-      (change) => ({
-        operation:
-          change.operation,
-        path:
-          change.path,
-        reason:
-          change.reason || ""
-      })
-    )
+    changes:
+      changes.map(
+        (change) => ({
+          operation:
+            change.operation,
+          path:
+            change.path,
+          reason:
+            change.reason || ""
+        })
+      )
   };
 }
 
@@ -509,7 +761,9 @@ function formatPlan(plan) {
     );
   }
 
-  return lines.join("\n");
+  return lines.join(
+    "\n"
+  );
 }
 
 function formatChanges(
@@ -599,7 +853,9 @@ function formatPermissionRequest(
     "DENY — koi GitHub write nahi"
   );
 
-  return lines.join("\n");
+  return lines.join(
+    "\n"
+  );
 }
 
 function permissionGrantedMessage(
@@ -616,7 +872,74 @@ function permissionGrantedMessage(
       ? ` Expires: ${data.expiresAt}.`
       : "";
 
-  return `${label} granted.${expires} Actual GitHub write abhi separate apply step mein hoga.`;
+  return `${label} granted.${expires} Actual GitHub write ab apply step mein hoga.`;
+}
+
+function formatApplyResult(
+  apply,
+  verification
+) {
+  const verifiedCount =
+    Array.isArray(
+      verification?.verifiedFiles
+    )
+      ? verification.verifiedFiles.length
+      : 0;
+
+  const commitSha =
+    apply?.commit?.sha ||
+    "";
+
+  const lines = [
+    "GitHub changes successfully applied.",
+    "",
+    `Commit: ${commitSha}`,
+    `Verified files: ${verifiedCount}`
+  ];
+
+  if (
+    apply?.commit?.url
+  ) {
+    lines.push(
+      `Commit URL: ${apply.commit.url}`
+    );
+  }
+
+  lines.push(
+    "",
+    "Post-apply verification: PASSED"
+  );
+
+  return lines.join(
+    "\n"
+  );
+}
+
+function buildCommitMessage() {
+  const summary =
+    state.agent.plan?.summary;
+
+  if (
+    typeof summary ===
+      "string" &&
+    summary.trim()
+  ) {
+    return `LD76 Code Agent: ${summary.trim()}`.slice(
+      0,
+      500
+    );
+  }
+
+  return "LD76 Code Agent changes";
+}
+
+function isValidSha(value) {
+  return (
+    typeof value === "string" &&
+    /^[a-f0-9]{40}$/i.test(
+      value
+    )
+  );
 }
 
 function getOwner() {
