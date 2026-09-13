@@ -1697,6 +1697,24 @@ function getReadableError(
   return "Agent request failed.";
 }
 
+    async function readJson(response) {
+  const text = await response.text();
+
+  if (!text) {
+    return {};
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(
+      `Server returned invalid JSON (${response.status}).`
+    );
+  }
+    }
+
+
+
 
 async function readJson(
   response
