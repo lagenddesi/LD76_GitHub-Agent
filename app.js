@@ -1,8 +1,4 @@
-import { elements } from "./js/dom.js";
-
-import {
-  state
-} from "./js/state.js";
+import { state } from "./js/state.js";
 
 import {
   showScreen,
@@ -33,7 +29,8 @@ import {
 } from "./js/agent.js";
 
 import {
-  createConversationId,
+  getActiveConversationId,
+  startNewConversation,
   getConversationMessages
 } from "./js/history.js";
 
@@ -60,12 +57,20 @@ async function initialize() {
 
 async function initializeConversation() {
   try {
+    let conversationId =
+      getActiveConversationId();
+
+    if (!conversationId) {
+      conversationId =
+        startNewConversation();
+    }
+
     state.conversationId =
-      createConversationId();
+      conversationId;
 
     const messages =
       await getConversationMessages(
-        state.conversationId
+        conversationId
       );
 
     state.historyLoaded = true;
@@ -82,6 +87,11 @@ async function initializeConversation() {
     );
 
     state.historyLoaded = true;
+
+    if (!state.conversationId) {
+      state.conversationId =
+        startNewConversation();
+    }
 
     renderStoredMessages([]);
 
