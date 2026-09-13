@@ -19,38 +19,91 @@ const elements = {
     github: document.getElementById("screen-github"),
     settings: document.getElementById("screen-settings")
   },
-  navButtons: document.querySelectorAll("[data-screen]"),
-  chatMessages: document.getElementById("chat-messages"),
-  chatInput: document.getElementById("chat-input"),
-  sendButton: document.getElementById("send-button"),
-  modelSelector: document.getElementById("model-selector"),
-  geminiStatusBadge:
-    document.getElementById("gemini-status-badge"),
+
+  navButtons: document.querySelectorAll("[data-navigate]"),
+
+  connectionStatus:
+    document.getElementById("connection-status"),
+
+  chatMessages:
+    document.getElementById("chat-messages"),
+
+  chatForm:
+    document.getElementById("chat-form"),
+
+  chatInput:
+    document.getElementById("message-input"),
+
+  sendButton:
+    document.getElementById("send-button"),
+
+  modelSelector:
+    document.getElementById("model-selector"),
+
   githubStatusBadge:
     document.getElementById("github-status-badge"),
+
   githubConnectButton:
     document.getElementById("github-connect-button"),
+
+  githubDisconnectButton:
+    document.getElementById("github-disconnect-button"),
+
   githubConnectionMessage:
     document.getElementById("github-connection-message"),
+
   repositorySelector:
     document.getElementById("repository-selector"),
+
   branchSelector:
     document.getElementById("branch-selector"),
+
+  currentRepository:
+    document.getElementById("current-repository"),
+
   repositoryStatus:
     document.getElementById("repository-status"),
+
   geminiTestButton:
     document.getElementById("gemini-test-button"),
+
   refreshModelsButton:
-    document.getElementById("refresh-models-button")
+    document.getElementById("refresh-models-button"),
+
+  agentProgress:
+    document.getElementById("agent-progress"),
+
+  agentProgressText:
+    document.getElementById("agent-progress-text"),
+
+  globalMessage:
+    document.getElementById("global-message"),
+
+  newChatButton:
+    document.getElementById("new-chat-button"),
+
+  clearLocalDataButton:
+    document.getElementById("clear-local-data-button"),
+
+  menuButton:
+    document.getElementById("menu-button"),
+
+  mainNavigation:
+    document.getElementById("main-navigation")
 };
 
-document.addEventListener("DOMContentLoaded", initialize);
+document.addEventListener(
+  "DOMContentLoaded",
+  initialize
+);
 
 async function initialize() {
   bindNavigation();
   bindChat();
   bindGeminiControls();
   bindGitHubControls();
+  bindLocalDataControls();
+  bindMenuControls();
 
   showScreen("chat");
   addWelcomeMessage();
@@ -67,7 +120,7 @@ async function initialize() {
 function bindNavigation() {
   elements.navButtons.forEach((button) => {
     button.addEventListener("click", () => {
-      const screen = button.dataset.screen;
+      const screen = button.dataset.navigate;
 
       if (
         screen === "chat" ||
@@ -89,22 +142,71 @@ function showScreen(screen) {
         return;
       }
 
+      element.classList.toggle(
+        "active",
+        name === screen
+      );
+
       element.hidden = name !== screen;
     }
   );
 
   elements.navButtons.forEach((button) => {
+    const active =
+      button.dataset.navigate === screen;
+
     button.classList.toggle(
       "active",
-      button.dataset.screen === screen
+      active
     );
+
+    if (active) {
+      button.setAttribute(
+        "aria-current",
+        "page"
+      );
+    } else {
+      button.removeAttribute(
+        "aria-current"
+      );
+    }
   });
+
+  if (
+    elements.mainNavigation &&
+    elements.menuButton
+  ) {
+    elements.menuButton.setAttribute(
+      "aria-expanded",
+      "false"
+    );
+  }
+}
+
+function bindMenuControls() {
+  elements.menuButton?.addEventListener(
+    "click",
+    () => {
+      const expanded =
+        elements.menuButton.getAttribute(
+          "aria-expanded"
+        ) === "true";
+
+      elements.menuButton.setAttribute(
+        "aria-expanded",
+        String(!expanded)
+      );
+    }
+  );
 }
 
 function bindChat() {
-  elements.sendButton?.addEventListener(
-    "click",
-    sendChatMessage
+  elements.chatForm?.addEventListener(
+    "submit",
+    (event) => {
+      event.preventDefault();
+      sendChatMessage();
+    }
   );
 
   elements.chatInput?.addEventListener(
@@ -124,7 +226,8 @@ function bindChat() {
     "change",
     () => {
       state.selectedModel =
-        elements.modelSelector.value || "auto";
+        elements.modelSelector.value ||
+        "auto";
     }
   );
 }
@@ -145,21 +248,33 @@ function bindGitHubControls() {
   elements.githubConnectButton?.addEventListener(
     "click",
     () => {
-      window.location.href = "/api/github/login";
+      if (state.busy) {
+        return;
+      }
+
+      window.location.href =
+        "/api/github/login";
     }
+  );
+
+  elements.githubDisconnectButton?.addEventListener(
+    "click",
+    disconnectGitHub
   );
 
   elements.repositorySelector?.addEventListener(
     "change",
     async () => {
       const value =
-        elements.repositorySelector.value || "";
+        elements.repositorySelector.value ||
+        "";
 
       state.selectedRepository = value;
       state.selectedBranch = "";
       state.branches = [];
 
       resetBranchSelector();
+      updateCurrentRepository();
 
       if (!value) {
         updateRepositoryStatus();
@@ -177,7 +292,10 @@ function bindGitHubControls() {
 
       const [owner, repo] = parts;
 
-      await loadBranches(owner, repo);
+      await loadBranches(
+        owner,
+        repo
+      );
     }
   );
 
@@ -185,10 +303,23 @@ function bindGitHubControls() {
     "change",
     () => {
       state.selectedBranch =
-        elements.branchSelector.value || "";
+        elements.branchSelector.value ||
+        "";
 
       updateRepositoryStatus();
     }
+  );
+}
+
+function bindLocalDataControls() {
+  elements.newChatButton?.addEventListener(
+    "click",
+    startNewChat
+  );
+
+  elements.clearLocalDataButton?.addEventListener(
+    "click",
+    clearLocalData
   );
 }
 
@@ -204,9 +335,13 @@ async function refreshGeminiStatus() {
       }
     );
 
-    const data = await readJson(response);
+    const data =
+      await readJson(response);
 
-    if (!response.ok || !data?.ok) {
+    if (
+      !response.ok ||
+      !data?.ok
+    ) {
       throw new Error(
         data?.error ||
           "Could not check Gemini configuration."
@@ -230,7 +365,9 @@ async function refreshGeminiStatus() {
     state.geminiConfigured = false;
     state.geminiConnected = false;
 
-    setGeminiStatus("unavailable");
+    setGeminiStatus(
+      "unavailable"
+    );
   }
 }
 
@@ -253,9 +390,13 @@ async function testGeminiConnection() {
       }
     );
 
-    const data = await readJson(response);
+    const data =
+      await readJson(response);
 
-    if (!response.ok || !data?.ok) {
+    if (
+      !response.ok ||
+      !data?.ok
+    ) {
       throw new Error(
         data?.error ||
           "Gemini connection test failed."
@@ -265,7 +406,14 @@ async function testGeminiConnection() {
     state.geminiConfigured = true;
     state.geminiConnected = true;
 
-    setGeminiStatus("connected");
+    setGeminiStatus(
+      "connected"
+    );
+
+    showGlobalMessage(
+      "Gemini connection successful.",
+      "success"
+    );
   } catch (error) {
     console.error(
       "Gemini connection test failed:",
@@ -278,6 +426,12 @@ async function testGeminiConnection() {
       state.geminiConfigured
         ? "error"
         : "not-configured"
+    );
+
+    showGlobalMessage(
+      error.message ||
+        "Gemini connection test failed.",
+      "error"
     );
   } finally {
     setBusy(false);
@@ -302,9 +456,13 @@ async function refreshModels() {
       }
     );
 
-    const data = await readJson(response);
+    const data =
+      await readJson(response);
 
-    if (!response.ok || !data?.ok) {
+    if (
+      !response.ok ||
+      !data?.ok
+    ) {
       throw new Error(
         data?.error ||
           "Could not load Gemini models."
@@ -332,6 +490,7 @@ async function refreshModels() {
     );
 
     state.availableModels = [];
+
     renderModelSelector();
 
     setGeminiStatus(
@@ -352,7 +511,9 @@ function renderModelSelector() {
   elements.modelSelector.replaceChildren();
 
   const autoOption =
-    document.createElement("option");
+    document.createElement(
+      "option"
+    );
 
   autoOption.value = "auto";
   autoOption.textContent = "Auto";
@@ -361,36 +522,43 @@ function renderModelSelector() {
     autoOption
   );
 
-  state.availableModels.forEach((model) => {
-    if (
-      !model ||
-      typeof model.name !== "string"
-    ) {
-      return;
+  state.availableModels.forEach(
+    (model) => {
+      if (
+        !model ||
+        typeof model.name !==
+          "string"
+      ) {
+        return;
+      }
+
+      const option =
+        document.createElement(
+          "option"
+        );
+
+      option.value = model.name;
+
+      option.textContent =
+        typeof model.displayName ===
+          "string" &&
+        model.displayName.trim()
+          ? model.displayName
+          : model.name;
+
+      elements.modelSelector.appendChild(
+        option
+      );
     }
-
-    const option =
-      document.createElement("option");
-
-    option.value = model.name;
-
-    option.textContent =
-      typeof model.displayName === "string" &&
-      model.displayName.trim()
-        ? model.displayName
-        : model.name;
-
-    elements.modelSelector.appendChild(
-      option
-    );
-  });
+  );
 
   const selectedExists =
     state.selectedModel === "auto" ||
     state.availableModels.some(
       (model) =>
         model &&
-        model.name === state.selectedModel
+        model.name ===
+          state.selectedModel
     );
 
   if (!selectedExists) {
@@ -410,18 +578,24 @@ async function sendChatMessage() {
   }
 
   const message =
-    elements.chatInput?.value.trim() || "";
+    elements.chatInput?.value.trim() ||
+    "";
 
   if (!message) {
     return;
   }
 
-  appendMessage("user", message);
+  appendMessage(
+    "user",
+    message
+  );
 
   elements.chatInput.value = "";
 
   setBusy(true);
-  appendProgress("Thinking...");
+  appendProgress(
+    "Thinking..."
+  );
 
   try {
     const response = await fetch(
@@ -435,16 +609,21 @@ async function sendChatMessage() {
         },
         body: JSON.stringify({
           message,
-          model: state.selectedModel
+          model:
+            state.selectedModel
         })
       }
     );
 
-    const data = await readJson(response);
+    const data =
+      await readJson(response);
 
     removeProgress();
 
-    if (!response.ok || !data?.ok) {
+    if (
+      !response.ok ||
+      !data?.ok
+    ) {
       throw new Error(
         data?.error ||
           "Gemini generation failed."
@@ -453,11 +632,13 @@ async function sendChatMessage() {
 
     appendMessage(
       "assistant",
-      data.text || "No response returned."
+      data.text ||
+        "No response returned."
     );
 
     if (
-      typeof data.model === "string" &&
+      typeof data.model ===
+        "string" &&
       data.model
     ) {
       appendMessage(
@@ -467,7 +648,10 @@ async function sendChatMessage() {
     }
 
     state.geminiConnected = true;
-    setGeminiStatus("connected");
+
+    setGeminiStatus(
+      "connected"
+    );
   } catch (error) {
     removeProgress();
 
@@ -495,7 +679,9 @@ async function sendChatMessage() {
 }
 
 async function refreshGitHubStatus() {
-  setGitHubStatus("checking");
+  setGitHubStatus(
+    "checking"
+  );
 
   try {
     const response = await fetch(
@@ -508,9 +694,13 @@ async function refreshGitHubStatus() {
       }
     );
 
-    const data = await readJson(response);
+    const data =
+      await readJson(response);
 
-    if (!response.ok || !data?.ok) {
+    if (
+      !response.ok ||
+      !data?.ok
+    ) {
       throw new Error(
         data?.error ||
           "Could not check GitHub connection."
@@ -518,15 +708,12 @@ async function refreshGitHubStatus() {
     }
 
     if (!data.connected) {
-      state.githubConnected = false;
-      state.githubUser = null;
-      state.repositories = [];
-      state.branches = [];
+      clearGitHubState();
 
-      resetRepositorySelector();
-      resetBranchSelector();
+      setGitHubStatus(
+        "disconnected"
+      );
 
-      setGitHubStatus("disconnected");
       updateGitHubMessage();
       return;
     }
@@ -535,7 +722,10 @@ async function refreshGitHubStatus() {
     state.githubUser =
       data.user || null;
 
-    setGitHubStatus("connected");
+    setGitHubStatus(
+      "connected"
+    );
+
     updateGitHubMessage();
 
     await loadRepositories();
@@ -545,12 +735,98 @@ async function refreshGitHubStatus() {
       error
     );
 
-    state.githubConnected = false;
-    state.githubUser = null;
+    clearGitHubState();
 
-    setGitHubStatus("error");
+    setGitHubStatus(
+      "error"
+    );
+
     updateGitHubMessage();
   }
+}
+
+async function disconnectGitHub() {
+  if (state.busy) {
+    return;
+  }
+
+  const confirmed =
+    window.confirm(
+      "Disconnect GitHub from LD76 Code Agent?"
+    );
+
+  if (!confirmed) {
+    return;
+  }
+
+  setBusy(true);
+
+  try {
+    const response = await fetch(
+      "/api/github/logout",
+      {
+        method: "POST",
+        headers: {
+          Accept: "application/json"
+        }
+      }
+    );
+
+    const data =
+      await readJson(response);
+
+    if (
+      !response.ok ||
+      !data?.ok
+    ) {
+      throw new Error(
+        data?.error ||
+          "GitHub disconnect failed."
+      );
+    }
+
+    clearGitHubState();
+
+    setGitHubStatus(
+      "disconnected"
+    );
+
+    updateGitHubMessage();
+
+    showGlobalMessage(
+      "GitHub disconnected successfully.",
+      "success"
+    );
+
+    showScreen("github");
+  } catch (error) {
+    console.error(
+      "GitHub disconnect failed:",
+      error
+    );
+
+    showGlobalMessage(
+      error.message ||
+        "Could not disconnect GitHub.",
+      "error"
+    );
+  } finally {
+    setBusy(false);
+  }
+}
+
+function clearGitHubState() {
+  state.githubConnected = false;
+  state.githubUser = null;
+  state.repositories = [];
+  state.branches = [];
+  state.selectedRepository = "";
+  state.selectedBranch = "";
+
+  resetRepositorySelector();
+  resetBranchSelector();
+  updateCurrentRepository();
+  updateRepositoryStatus();
 }
 
 async function loadRepositories() {
@@ -571,9 +847,13 @@ async function loadRepositories() {
       }
     );
 
-    const data = await readJson(response);
+    const data =
+      await readJson(response);
 
-    if (!response.ok || !data?.ok) {
+    if (
+      !response.ok ||
+      !data?.ok
+    ) {
       throw new Error(
         data?.error ||
           "Could not load GitHub repositories."
@@ -581,7 +861,9 @@ async function loadRepositories() {
     }
 
     state.repositories =
-      Array.isArray(data.repositories)
+      Array.isArray(
+        data.repositories
+      )
         ? data.repositories
         : [];
 
@@ -607,14 +889,19 @@ async function loadRepositories() {
   }
 }
 
-async function loadBranches(owner, repo) {
+async function loadBranches(
+  owner,
+  repo
+) {
   setBranchLoading(true);
 
   try {
     const query =
       `?owner=${encodeURIComponent(
         owner
-      )}&repo=${encodeURIComponent(repo)}`;
+      )}&repo=${encodeURIComponent(
+        repo
+      )}`;
 
     const response = await fetch(
       `/api/github/branches${query}`,
@@ -626,9 +913,13 @@ async function loadBranches(owner, repo) {
       }
     );
 
-    const data = await readJson(response);
+    const data =
+      await readJson(response);
 
-    if (!response.ok || !data?.ok) {
+    if (
+      !response.ok ||
+      !data?.ok
+    ) {
       throw new Error(
         data?.error ||
           "Could not load repository branches."
@@ -642,21 +933,22 @@ async function loadBranches(owner, repo) {
 
     renderBranchSelector();
 
-    const selectedRepository =
+    const repository =
       findSelectedRepository();
 
     if (
-      selectedRepository &&
-      typeof selectedRepository.defaultBranch ===
+      repository &&
+      typeof repository.defaultBranch ===
         "string" &&
       state.branches.some(
         (branch) =>
+          branch &&
           branch.name ===
-          selectedRepository.defaultBranch
+            repository.defaultBranch
       )
     ) {
       state.selectedBranch =
-        selectedRepository.defaultBranch;
+        repository.defaultBranch;
 
       elements.branchSelector.value =
         state.selectedBranch;
@@ -670,6 +962,7 @@ async function loadBranches(owner, repo) {
     );
 
     state.branches = [];
+
     resetBranchSelector();
 
     updateRepositoryStatus(
@@ -689,9 +982,12 @@ function renderRepositorySelector() {
   elements.repositorySelector.replaceChildren();
 
   const emptyOption =
-    document.createElement("option");
+    document.createElement(
+      "option"
+    );
 
   emptyOption.value = "";
+
   emptyOption.textContent =
     state.repositories.length
       ? "Select repository"
@@ -712,7 +1008,9 @@ function renderRepositorySelector() {
       }
 
       const option =
-        document.createElement("option");
+        document.createElement(
+          "option"
+        );
 
       option.value =
         repository.fullName;
@@ -753,7 +1051,9 @@ function renderBranchSelector() {
   elements.branchSelector.replaceChildren();
 
   const emptyOption =
-    document.createElement("option");
+    document.createElement(
+      "option"
+    );
 
   emptyOption.value = "";
 
@@ -766,42 +1066,54 @@ function renderBranchSelector() {
     emptyOption
   );
 
-  state.branches.forEach((branch) => {
-    if (
-      !branch ||
-      typeof branch.name !== "string"
-    ) {
-      return;
+  state.branches.forEach(
+    (branch) => {
+      if (
+        !branch ||
+        typeof branch.name !==
+          "string"
+      ) {
+        return;
+      }
+
+      const option =
+        document.createElement(
+          "option"
+        );
+
+      option.value =
+        branch.name;
+
+      option.textContent =
+        branch.protected
+          ? `${branch.name} 🔒`
+          : branch.name;
+
+      elements.branchSelector.appendChild(
+        option
+      );
     }
-
-    const option =
-      document.createElement("option");
-
-    option.value = branch.name;
-
-    option.textContent =
-      branch.protected
-        ? `${branch.name} 🔒`
-        : branch.name;
-
-    elements.branchSelector.appendChild(
-      option
-    );
-  });
+  );
 
   elements.branchSelector.disabled =
+    !state.githubConnected ||
     !state.selectedRepository ||
     state.branches.length === 0;
 
-  if (state.selectedBranch) {
+  if (
+    state.selectedBranch &&
+    state.branches.some(
+      (branch) =>
+        branch.name ===
+        state.selectedBranch
+    )
+  ) {
     elements.branchSelector.value =
       state.selectedBranch;
   }
 }
 
 function resetRepositorySelector() {
-  state.selectedRepository = "";
-
   if (!elements.repositorySelector) {
     return;
   }
@@ -809,7 +1121,9 @@ function resetRepositorySelector() {
   elements.repositorySelector.replaceChildren();
 
   const option =
-    document.createElement("option");
+    document.createElement(
+      "option"
+    );
 
   option.value = "";
   option.textContent =
@@ -824,9 +1138,6 @@ function resetRepositorySelector() {
 }
 
 function resetBranchSelector() {
-  state.selectedBranch = "";
-  state.branches = [];
-
   if (!elements.branchSelector) {
     return;
   }
@@ -834,7 +1145,9 @@ function resetBranchSelector() {
   elements.branchSelector.replaceChildren();
 
   const option =
-    document.createElement("option");
+    document.createElement(
+      "option"
+    );
 
   option.value = "";
   option.textContent =
@@ -851,39 +1164,106 @@ function resetBranchSelector() {
 function findSelectedRepository() {
   return state.repositories.find(
     (repository) =>
+      repository &&
       repository.fullName ===
-      state.selectedRepository
-  ) || null;
+        state.selectedRepository
+  );
 }
 
 function updateGitHubMessage() {
-  if (!elements.githubConnectionMessage) {
+  if (
+    !elements.githubConnectionMessage
+  ) {
     return;
   }
 
-  if (state.githubConnected) {
-    const login =
-      state.githubUser?.login || "GitHub user";
+  if (
+    !state.githubConnected
+  ) {
+    elements.githubConnectionMessage.textContent =
+      "GitHub is not connected.";
 
+    updateGitHubButtons();
+    return;
+  }
+
+  const login =
+    state.githubUser?.login;
+
+  if (login) {
     elements.githubConnectionMessage.textContent =
       `Connected as ${login}.`;
+  } else {
+    elements.githubConnectionMessage.textContent =
+      "GitHub is connected.";
+  }
+
+  updateGitHubButtons();
+}
+
+function updateGitHubButtons() {
+  if (
+    elements.githubConnectButton
+  ) {
+    elements.githubConnectButton.hidden =
+      state.githubConnected;
+  }
+
+  if (
+    elements.githubDisconnectButton
+  ) {
+    elements.githubDisconnectButton.hidden =
+      !state.githubConnected;
+  }
+}
+
+function updateCurrentRepository() {
+  if (
+    !elements.currentRepository
+  ) {
     return;
   }
 
-  elements.githubConnectionMessage.textContent =
-    "Connect GitHub to select a repository and branch.";
+  if (!state.selectedRepository) {
+    elements.currentRepository.textContent =
+      "No repository selected";
+    return;
+  }
+
+  if (!state.selectedBranch) {
+    elements.currentRepository.textContent =
+      state.selectedRepository;
+    return;
+  }
+
+  elements.currentRepository.textContent =
+    `${state.selectedRepository}:${state.selectedBranch}`;
 }
 
 function updateRepositoryStatus(
-  customMessage = ""
+  overrideMessage = ""
 ) {
+  updateCurrentRepository();
+
   if (!elements.repositoryStatus) {
     return;
   }
 
-  if (customMessage) {
+  if (overrideMessage) {
     elements.repositoryStatus.textContent =
-      customMessage;
+      overrideMessage;
+    return;
+  }
+
+  if (!state.githubConnected) {
+    elements.repositoryStatus.textContent =
+      "Connect GitHub to select a repository.";
+    return;
+  }
+
+  if (!state.repositories.length) {
+    elements.repositoryStatus.textContent =
+      "No repositories available.";
     return;
   }
 
@@ -895,221 +1275,423 @@ function updateRepositoryStatus(
 
   if (!state.selectedBranch) {
     elements.repositoryStatus.textContent =
-      `Repository: ${state.selectedRepository} — select a branch.`;
+      `${state.selectedRepository} selected. Choose a branch.`;
     return;
   }
 
   elements.repositoryStatus.textContent =
-    `Selected: ${state.selectedRepository} / ${state.selectedBranch}`;
+    `Working context: ${state.selectedRepository} / ${state.selectedBranch}`;
 }
 
-function setRepositoryLoading(loading) {
+function setRepositoryLoading(
+  loading
+) {
   if (!elements.repositorySelector) {
     return;
   }
 
   if (loading) {
-    elements.repositorySelector.replaceChildren();
-
-    const option =
-      document.createElement("option");
-
-    option.value = "";
-    option.textContent =
-      "Loading repositories...";
-
-    elements.repositorySelector.appendChild(
-      option
-    );
-
     elements.repositorySelector.disabled =
       true;
-  } else {
-    renderRepositorySelector();
+
+    elements.repositorySelector.innerHTML =
+      `<option value="">Loading repositories...</option>`;
+
+    return;
   }
+
+  renderRepositorySelector();
 }
 
-function setBranchLoading(loading) {
+function setBranchLoading(
+  loading
+) {
   if (!elements.branchSelector) {
     return;
   }
 
   if (loading) {
-    elements.branchSelector.replaceChildren();
-
-    const option =
-      document.createElement("option");
-
-    option.value = "";
-    option.textContent =
-      "Loading branches...";
-
-    elements.branchSelector.appendChild(
-      option
-    );
-
     elements.branchSelector.disabled =
       true;
-  } else {
-    renderBranchSelector();
-  }
-}
 
-function setGitHubStatus(status) {
-  if (!elements.githubStatusBadge) {
+    elements.branchSelector.innerHTML =
+      `<option value="">Loading branches...</option>`;
+
     return;
   }
 
-  const labels = {
-    checking: "Checking...",
-    connected: "Connected",
-    disconnected: "Not connected",
-    error: "Unavailable"
-  };
-
-  elements.githubStatusBadge.textContent =
-    labels[status] || "Unknown";
-
-  elements.githubStatusBadge.dataset.status =
-    status;
+  renderBranchSelector();
 }
 
-function setGeminiStatus(status) {
-  if (!elements.geminiStatusBadge) {
+function setGitHubStatus(
+  status
+) {
+  if (
+    elements.githubStatusBadge
+  ) {
+    const labels = {
+      checking: "Checking...",
+      connected: "Connected",
+      disconnected: "Disconnected",
+      error: "Error"
+    };
+
+    elements.githubStatusBadge.textContent =
+      labels[status] ||
+      "Disconnected";
+  }
+
+  if (
+    elements.connectionStatus
+  ) {
+    if (status === "connected") {
+      const login =
+        state.githubUser?.login;
+
+      elements.connectionStatus.textContent =
+        login
+          ? `GitHub: ${login}`
+          : "GitHub connected";
+
+      return;
+    }
+
+    if (status === "checking") {
+      elements.connectionStatus.textContent =
+        "Checking connection...";
+      return;
+    }
+
+    elements.connectionStatus.textContent =
+      "Not connected";
+  }
+
+  updateGitHubButtons();
+}
+
+function setGeminiStatus(
+  status
+) {
+  if (
+    !elements.globalMessage
+  ) {
     return;
   }
 
-  const labels = {
-    testing: "Testing...",
-    connected: "Connected",
-    configured: "Configured",
-    "not-configured": "Not configured",
-    unavailable: "Unavailable",
-    error: "Error"
-  };
-
-  elements.geminiStatusBadge.textContent =
-    labels[status] || "Unknown";
-
-  elements.geminiStatusBadge.dataset.status =
-    status;
+  if (status === "connected") {
+    return;
+  }
 }
 
-function setBusy(value) {
-  state.busy = value;
+function setBusy(
+  busy
+) {
+  state.busy = busy;
 
-  if (elements.sendButton) {
-    elements.sendButton.disabled = value;
+  if (
+    elements.sendButton
+  ) {
+    elements.sendButton.disabled =
+      busy;
   }
 
-  if (elements.chatInput) {
-    elements.chatInput.disabled = value;
+  if (
+    elements.chatInput
+  ) {
+    elements.chatInput.disabled =
+      busy;
   }
 
-  if (elements.geminiTestButton) {
+  if (
+    elements.geminiTestButton
+  ) {
     elements.geminiTestButton.disabled =
-      value;
+      busy;
   }
 
-  if (elements.refreshModelsButton) {
+  if (
+    elements.refreshModelsButton
+  ) {
     elements.refreshModelsButton.disabled =
-      value;
+      busy;
+  }
+
+  if (
+    elements.githubConnectButton
+  ) {
+    elements.githubConnectButton.disabled =
+      busy;
+  }
+
+  if (
+    elements.githubDisconnectButton
+  ) {
+    elements.githubDisconnectButton.disabled =
+      busy;
   }
 }
 
 function appendMessage(
-  role,
+  type,
   text
 ) {
   if (!elements.chatMessages) {
     return;
   }
 
+  const empty =
+    elements.chatMessages.querySelector(
+      ".empty-chat"
+    );
+
+  empty?.remove();
+
   const message =
-    document.createElement("div");
+    document.createElement(
+      "div"
+    );
 
   message.className =
-    `message message-${role}`;
+    `chat-message ${type}`;
 
   const content =
-    document.createElement("div");
+    document.createElement(
+      "div"
+    );
 
   content.className =
-    "message-content";
+    "chat-message-content";
 
-  content.textContent = text;
+  content.textContent =
+    String(text);
 
-  message.appendChild(content);
+  message.appendChild(
+    content
+  );
+
   elements.chatMessages.appendChild(
     message
   );
-
-  scrollChatToBottom();
-}
-
-function appendProgress(text) {
-  if (!elements.chatMessages) {
-    return;
-  }
-
-  removeProgress();
-
-  const progress =
-    document.createElement("div");
-
-  progress.id =
-    "chat-progress";
-
-  progress.className =
-    "message message-progress";
-
-  const content =
-    document.createElement("div");
-
-  content.className =
-    "message-content";
-
-  content.textContent = text;
-
-  progress.appendChild(content);
-
-  elements.chatMessages.appendChild(
-    progress
-  );
-
-  scrollChatToBottom();
-}
-
-function removeProgress() {
-  document
-    .getElementById("chat-progress")
-    ?.remove();
-}
-
-function addWelcomeMessage() {
-  if (
-    !elements.chatMessages ||
-    elements.chatMessages.children.length > 0
-  ) {
-    return;
-  }
-
-  appendMessage(
-    "assistant",
-    "LD76 Code Agent ready. Connect GitHub and choose a repository when you are ready."
-  );
-}
-
-function scrollChatToBottom() {
-  if (!elements.chatMessages) {
-    return;
-  }
 
   elements.chatMessages.scrollTop =
     elements.chatMessages.scrollHeight;
 }
 
-async function readJson(response) {
+function addWelcomeMessage() {
+  if (
+    !elements.chatMessages
+  ) {
+    return;
+  }
+
+  if (
+    elements.chatMessages.children.length
+  ) {
+    return;
+  }
+
+  const empty =
+    document.createElement(
+      "div"
+    );
+
+  empty.className =
+    "empty-chat";
+
+  const icon =
+    document.createElement(
+      "div"
+    );
+
+  icon.className =
+    "empty-chat-icon";
+
+  icon.textContent = "⌘";
+
+  const title =
+    document.createElement(
+      "h2"
+    );
+
+  title.textContent =
+    "Ready to code";
+
+  const description =
+    document.createElement(
+      "p"
+    );
+
+  description.textContent =
+    "Connect a GitHub repository and start a conversation with your coding agent.";
+
+  empty.appendChild(icon);
+  empty.appendChild(title);
+  empty.appendChild(
+    description
+  );
+
+  elements.chatMessages.appendChild(
+    empty
+  );
+}
+
+function appendProgress(
+  text
+) {
+  if (
+    !elements.agentProgress
+  ) {
+    return;
+  }
+
+  elements.agentProgress.classList.remove(
+    "hidden"
+  );
+
+  if (
+    elements.agentProgressText
+  ) {
+    elements.agentProgressText.textContent =
+      text;
+  }
+}
+
+function removeProgress() {
+  elements.agentProgress?.classList.add(
+    "hidden"
+  );
+}
+
+function showGlobalMessage(
+  message,
+  type = "info"
+) {
+  if (
+    !elements.globalMessage
+  ) {
+    return;
+  }
+
+  elements.globalMessage.textContent =
+    message;
+
+  elements.globalMessage.className =
+    `global-message ${type}`;
+
+  window.clearTimeout(
+    showGlobalMessage.timer
+  );
+
+  showGlobalMessage.timer =
+    window.setTimeout(
+      () => {
+        elements.globalMessage.classList.add(
+          "hidden"
+        );
+      },
+      4000
+    );
+}
+
+function startNewChat() {
+  if (
+    state.busy ||
+    !elements.chatMessages
+  ) {
+    return;
+  }
+
+  elements.chatMessages.replaceChildren();
+
+  addWelcomeMessage();
+
+  elements.chatInput?.focus();
+}
+
+function clearLocalData() {
+  const confirmed =
+    window.confirm(
+      "Clear local LD76 Code Agent data from this browser?"
+    );
+
+  if (!confirmed) {
+    return;
+  }
+
+  try {
+    localStorage.clear();
+
+    if (
+      "indexedDB" in window
+    ) {
+      console.info(
+        "IndexedDB cleanup is not configured yet."
+      );
+    }
+
+    showGlobalMessage(
+      "Local data cleared.",
+      "success"
+    );
+  } catch (error) {
+    console.error(
+      "Local data cleanup failed:",
+      error
+    );
+
+    showGlobalMessage(
+      "Could not clear local data.",
+      "error"
+    );
+  }
+}
+
+function handleGitHubCallbackMessage() {
+  const params =
+    new URLSearchParams(
+      window.location.search
+    );
+
+  const githubStatus =
+    params.get("github");
+
+  if (
+    githubStatus === "connected"
+  ) {
+    showGlobalMessage(
+      "GitHub connected successfully.",
+      "success"
+    );
+
+    refreshGitHubStatus();
+  }
+
+  if (
+    githubStatus === "error"
+  ) {
+    showGlobalMessage(
+      "GitHub connection failed.",
+      "error"
+    );
+  }
+
+  if (
+    githubStatus
+  ) {
+    const cleanUrl =
+      `${window.location.pathname}${window.location.hash}`;
+
+    window.history.replaceState(
+      {},
+      document.title,
+      cleanUrl
+    );
+  }
+}
+
+async function readJson(
+  response
+) {
   const text =
     await response.text();
 
@@ -1120,40 +1702,8 @@ async function readJson(response) {
   try {
     return JSON.parse(text);
   } catch {
-    return {
-      ok: false,
-      error:
-        "Server returned an invalid JSON response."
-    };
-  }
-}
-
-function handleGitHubCallbackMessage() {
-  const url =
-    new URL(window.location.href);
-
-  const status =
-    url.searchParams.get("github");
-
-  if (status === "connected") {
-    showScreen("github");
-    appendMessage(
-      "system",
-      "GitHub connected successfully."
+    throw new Error(
+      `Server returned invalid JSON (HTTP ${response.status}).`
     );
-
-    url.searchParams.delete("github");
-
-    window.history.replaceState(
-      {},
-      document.title,
-      url.pathname +
-        (url.searchParams.toString()
-          ? `?${url.searchParams.toString()}`
-          : "") +
-        url.hash
-    );
-
-    refreshGitHubStatus();
   }
-    }
+      }
