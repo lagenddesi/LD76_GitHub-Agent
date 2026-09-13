@@ -55,6 +55,24 @@ export const elements = {
   refreshModelsButton:
     document.getElementById("refresh-models-button"),
 
+  agentPermission:
+    document.getElementById("agent-permission"),
+
+  agentPermissionMessage:
+    document.getElementById("agent-permission-message"),
+
+  agentPermissionChanges:
+    document.getElementById("agent-permission-changes"),
+
+  agentAllowOnceButton:
+    document.getElementById("agent-allow-once-button"),
+
+  agentAllowTaskButton:
+    document.getElementById("agent-allow-task-button"),
+
+  agentDenyButton:
+    document.getElementById("agent-deny-button"),
+
   agentProgress:
     document.getElementById("agent-progress"),
 
