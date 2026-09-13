@@ -6,6 +6,7 @@ import {
 
 import {
   showScreen,
+  renderStoredMessages,
   addWelcomeMessage
 } from "./js/ui.js";
 
@@ -31,6 +32,11 @@ import {
   resetAgent
 } from "./js/agent.js";
 
+import {
+  createConversationId,
+  getConversationMessages
+} from "./js/history.js";
+
 document.addEventListener(
   "DOMContentLoaded",
   initialize
@@ -45,11 +51,42 @@ async function initialize() {
 
   showScreen("chat");
 
-  addWelcomeMessage();
-
   resetAgent();
 
+  await initializeConversation();
+
   await initializeServices();
+}
+
+async function initializeConversation() {
+  try {
+    state.conversationId =
+      createConversationId();
+
+    const messages =
+      await getConversationMessages(
+        state.conversationId
+      );
+
+    state.historyLoaded = true;
+
+    renderStoredMessages(messages);
+
+    if (messages.length === 0) {
+      addWelcomeMessage();
+    }
+  } catch (error) {
+    console.error(
+      "Conversation history initialization failed:",
+      error
+    );
+
+    state.historyLoaded = true;
+
+    renderStoredMessages([]);
+
+    addWelcomeMessage();
+  }
 }
 
 async function initializeServices() {
