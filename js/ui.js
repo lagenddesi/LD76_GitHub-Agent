@@ -44,14 +44,15 @@ export function showScreen(screen) {
 }
 
 export function closeNavigation() {
-  if (
-    !elements.mainNavigation ||
-    !elements.menuButton
-  ) {
+  if (!elements.mainNavigation) {
     return;
   }
 
-  elements.menuButton.setAttribute(
+  elements.mainNavigation.classList.remove(
+    "open"
+  );
+
+  elements.menuButton?.setAttribute(
     "aria-expanded",
     "false"
   );
