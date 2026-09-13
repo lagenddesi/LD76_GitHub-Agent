@@ -3951,15 +3951,37 @@ function getAccessToken(
 function parseBody(
   request
 ) {
-  if (
-    request?.body &&
-    typeof request.body ===
-      "object"
-  ) {
-    return request.body;
-  }
+  try {
+    const body = request?.body;
 
-  return null;
+    if (
+      body &&
+      typeof body === "object"
+    ) {
+      return body;
+    }
+
+    if (
+      typeof body === "string"
+    ) {
+      const text = body.trim();
+
+      if (!text) {
+        return null;
+      }
+
+      return JSON.parse(text);
+    }
+
+    return null;
+  } catch (error) {
+    console.error(
+      "Request body parsing failed:",
+      error
+    );
+
+    return null;
+  }
 }
 
 function cleanString(
