@@ -3359,12 +3359,8 @@ async function verifyChangesAgainstCommit({
    PERMISSION HELPERS
 ========================================================= */
 
-function normalizePermissionMode(
-  mode
-) {
-  const value =
-    cleanString(mode)
-      .toLowerCase();
+function normalizePermissionMode(mode) {
+  const value = cleanString(mode).toLowerCase();
 
   if (
     value === "allow_once" ||
@@ -3375,19 +3371,20 @@ function normalizePermissionMode(
 
   if (
     value === "allow_task" ||
-    value === "allow-task"
+    value === "allow-task" ||
+    value === "allow_for_task" ||
+    value === "allow-for-task"
   ) {
     return "allow_task";
   }
 
-  if (
-    value === "deny"
-  ) {
+  if (value === "deny") {
     return "deny";
   }
 
   return null;
 }
+
 
 function getPermissionExpiration(
   mode
