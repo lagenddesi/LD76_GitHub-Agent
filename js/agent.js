@@ -614,9 +614,12 @@ export async function createPlan(
     );
   }
 
-  return normalizePlan(
-    data.plan
-  );
+  return normalizePlan({
+  ...data.plan,
+  requiresWrite:
+    data.requiresWrite ??
+    data.plan.requiresWrite
+});
 }
 
 
