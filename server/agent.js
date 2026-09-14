@@ -3754,7 +3754,10 @@ async function findPermissionPayload(
   };
 }
 
-function createPermissionCookie({
+
+              
+
+  function createPermissionCookie({
   token,
   mode,
   owner,
@@ -3769,35 +3772,22 @@ function createPermissionCookie({
           1,
           Math.floor(
             (
-              Date.parse(
-                expiresAt
-              ) -
+              Date.parse(expiresAt) -
               Date.now()
-            ) /
-              1000
+            ) / 1000
           )
         )
       : 0;
 
-  const secure =
-    "ld76_permission=" +
-    encodeURIComponent(token) +
-    "; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=" +
-    maxAge;
-
-  const metadata = [
-    `ld76_permission_mode=${encodeURIComponent(mode)}`,
-    `ld76_permission_owner=${encodeURIComponent(owner)}`,
-    `ld76_permission_repo=${encodeURIComponent(repo)}`,
-    `ld76_permission_branch=${encodeURIComponent(branch)}`,
-    `ld76_permission_changes=${encodeURIComponent(changesHash)}`,
-    `ld76_permission_expires=${encodeURIComponent(expiresAt || "")}`
-  ].join("; ");
-
   return [
-    secure,
-    metadata
-  ].join(", ");
+    `${PERMISSION_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`,
+    `ld76_permission_mode=${encodeURIComponent(mode)}; Path=/; SameSite=Lax; Max-Age=${maxAge}`,
+    `ld76_permission_owner=${encodeURIComponent(owner)}; Path=/; SameSite=Lax; Max-Age=${maxAge}`,
+    `ld76_permission_repo=${encodeURIComponent(repo)}; Path=/; SameSite=Lax; Max-Age=${maxAge}`,
+    `ld76_permission_branch=${encodeURIComponent(branch)}; Path=/; SameSite=Lax; Max-Age=${maxAge}`,
+    `ld76_permission_changes=${encodeURIComponent(changesHash)}; Path=/; SameSite=Lax; Max-Age=${maxAge}`,
+    `ld76_permission_expires=${encodeURIComponent(expiresAt || "")}; Path=/; SameSite=Lax; Max-Age=${maxAge}`
+  ];
 }
 
 function createExpiredPermissionCookie() {
