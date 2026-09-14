@@ -3148,159 +3148,118 @@ async function preflightChanges({
   };
 }
 
+
 async function applyGitDataCommit({
   accessToken,
   owner,
   repo,
   branch,
-  headSha,
-  baseTreeSha,
-  message,
   changes,
-  treeEntries
+  commitMessage,
+  preflight
 }) {
-  const blobs = [];
+  const headSha = preflight.headSha;
+  const baseTreeSha = preflight.baseTreeSha;
+  const currentEntries = preflight.treeEntries || [];
 
-  for (
-    const change of changes
-  ) {
-    if (
-      change.operation ===
-      "delete"
-    ) {
-      blobs.push({
-        path:
-          change.path,
-        mode:
-          "100644",
-        type:
-          "blob",
-        sha:
-          null
-      });
+  const changedPaths = new Set(
+    changes.map((change) => change.path)
+  );
 
+  const treeEntries = [];
+
+  for (const entry of currentEntries) {
+    if (changedPaths.has(entry.path)) {
       continue;
     }
 
-    const blob =
-      await githubRequest(
-        accessToken,
-        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/blobs`,
-        {
-          method: "POST",
-          body: {
-            content:
-              change.content,
-            encoding:
-              "utf-8"
-          }
-        }
-      );
-
-    if (!blob?.sha) {
-      throw createHttpError(
-        502,
-        `Unable to create Git blob: ${change.path}`
-      );
+    if (!entry.sha || !entry.path) {
+      continue;
     }
 
-    blobs.push({
-      path:
-        change.path,
-      mode:
-        "100644",
-      type:
-        "blob",
-      sha:
-        blob.sha
+    treeEntries.push({
+      path: entry.path,
+      mode: entry.mode || "100644",
+      type: entry.type || "blob",
+      sha: entry.sha
     });
   }
 
-  const tree =
-    await githubRequest(
+  for (const change of changes) {
+    if (change.operation === "delete") {
+      continue;
+    }
+
+    const blob = await githubRequest(
       accessToken,
-      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/trees`,
+      `/repos/${owner}/${repo}/git/blobs`,
       {
         method: "POST",
         body: {
-          base_tree:
-            baseTreeSha,
-          tree: [
-            ...treeEntries
-              .filter(
-                (entry) =>
-                  !changes.some(
-                    (change) =>
-                      change.path ===
-                      entry.path
-                  )
-              )
-              .map(
-                (entry) => ({
-                  path:
-                    entry.path,
-                  mode:
-                    entry.mode ||
-                    "100644",
-                  type:
-                    "blob",
-                  sha:
-                    entry.sha
-                })
-              ),
-            ...blobs
-          ]
+          content: change.content,
+          encoding: "utf-8"
         }
       }
     );
 
-  if (!tree?.sha) {
-    throw createHttpError(
-      502,
-      "Unable to create Git tree."
-    );
+    treeEntries.push({
+      path: change.path,
+      mode: "100644",
+      type: "blob",
+      sha: blob.sha
+    });
   }
 
-  const commit =
-    await githubRequest(
-      accessToken,
-      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/commits`,
-      {
-        method: "POST",
-        body: {
-          message,
-          tree:
-            tree.sha,
-          parents: [
-            headSha
-          ]
-        }
-      }
-    );
-
-  if (!commit?.sha) {
-    throw createHttpError(
-      502,
-      "Unable to create Git commit."
-    );
-  }
-
-  await githubRequest(
+  const tree = await githubRequest(
     accessToken,
-    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/refs/heads/${encodeURIComponent(branch)}`,
+    `/repos/${owner}/${repo}/git/trees`,
     {
-      method: "PATCH",
+      method: "POST",
       body: {
-        sha:
-          commit.sha,
-        force:
-          false
+        base_tree: baseTreeSha,
+        tree: treeEntries
       }
     }
   );
 
-  return commit;
+  const commit = await githubRequest(
+    accessToken,
+    `/repos/${owner}/${repo}/git/commits`,
+    {
+      method: "POST",
+      body: {
+        message: commitMessage,
+        tree: tree.sha,
+        parents: [headSha]
+      }
+    }
+  );
+
+  await githubRequest(
+    accessToken,
+    `/repos/${owner}/${repo}/git/refs/heads/${encodeURIComponent(branch)}`,
+    {
+      method: "PATCH",
+      body: {
+        sha: commit.sha,
+        force: false
+      }
+    }
+  );
+
+  return {
+    commitSha: commit.sha,
+    treeSha: tree.sha,
+    branch
+  };
 }
+
+
+
+
+
+      
+            
 
 /* =========================================================
    VERIFY CHANGES
