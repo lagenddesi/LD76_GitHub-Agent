@@ -3335,14 +3335,13 @@ async function verifyChangesAgainstCommit({
       typeof change.content ===
       "string"
     ) {
-      const file =
-        await loadRepositoryFile(
-          accessToken,
-          owner,
-          repo,
-          "main",
-          change.path
-        );
+      const file = await loadRepositoryFile(
+  accessToken,
+  owner,
+  repo,
+  branch,
+  change.path
+);
 
       if (
         !file ||
