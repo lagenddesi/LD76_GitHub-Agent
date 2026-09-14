@@ -914,13 +914,14 @@ async function handleVerify(
     );
 
   const verified =
-    await verifyChangesAgainstCommit({
-      accessToken,
-      owner: context.owner,
-      repo: context.repo,
-      commit,
-      changes
-    });
+  await verifyChangesAgainstCommit({
+    accessToken,
+    owner: context.owner,
+    repo: context.repo,
+    branch: context.branch,
+    commit,
+    changes
+  });
 
   return response.status(200).json({
     ok: true,
