@@ -790,19 +790,15 @@ async function handleApply(
     });
 
   const commit =
-    await applyGitDataCommit({
-      accessToken,
-      owner: context.owner,
-      repo: context.repo,
-      branch: context.branch,
-      headSha: preflight.headSha,
-      baseTreeSha:
-        preflight.baseTreeSha,
-      message,
-      changes,
-      treeEntries:
-        preflight.treeEntries
-    });
+  await applyGitDataCommit({
+    accessToken,
+    owner: context.owner,
+    repo: context.repo,
+    branch: context.branch,
+    changes,
+    commitMessage: message,
+    preflight
+  });
 
   if (
     permission.mode === "allow_once"
