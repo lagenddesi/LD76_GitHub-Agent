@@ -3266,6 +3266,7 @@ async function verifyChangesAgainstCommit({
   accessToken,
   owner,
   repo,
+  branch,
   commit,
   changes
 }) {
